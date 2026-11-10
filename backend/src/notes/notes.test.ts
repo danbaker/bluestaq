@@ -21,6 +21,7 @@ async function world() {
 
 describe("auth required", () => {
   it.each([
+    ["get", "/api/notes"],
     ["get", "/api/teams/1/notes"],
     ["post", "/api/teams/1/notes"],
     ["get", "/api/notes/2f1c1c1e-6a0b-4b7a-9d57-0f5f3f8a1b11"],
@@ -107,6 +108,91 @@ describe("list", () => {
     expect(await titles(alice, teamId)).toEqual(["Alpha note"]);
     expect(await titles(alice, betaId)).toEqual(["Beta note"]);
     expect(await titles(bob, betaId)).toEqual(["Beta note"]); // same view from both members
+  });
+});
+
+describe("GET /api/notes (all my teams)", () => {
+  it("is empty for a user with no teams", async () => {
+    const { carol } = await world();
+    expect((await carol.get("/api/notes")).body).toEqual([]);
+  });
+
+  it("lists notes from every team I am on, with team name and title, and nothing from other teams", async () => {
+    const { alice, bob, carol, teamId } = await world();
+    const betaId = (await bob.post("/api/teams").send({ name: "Beta" })).body.id as number;
+    await bob.post(`/api/teams/${betaId}/members`).send({ username: "alice" });
+    const gammaId = (await carol.post("/api/teams").send({ name: "Gamma" })).body.id as number;
+
+    await alice.post(`/api/teams/${teamId}/notes`).send({ title: "Alpha plan" });
+    await bob.post(`/api/teams/${betaId}/notes`).send({ title: "Beta plan" });
+    await carol.post(`/api/teams/${gammaId}/notes`).send({ title: "Gamma secret" });
+
+    const mine = (await alice.get("/api/notes")).body as { teamName: string; title: string; teamId: number }[];
+    const shown = mine.filter((n) => n.title.endsWith("plan")).map((n) => [n.teamName, n.title]);
+    expect(shown).toEqual([
+      ["Alpha", "Alpha plan"],
+      ["Beta", "Beta plan"],
+    ]);
+    expect(mine.map((n) => n.title)).not.toContain("Gamma secret");
+    expect(mine.every((n) => [teamId, betaId].includes(n.teamId))).toBe(true);
+
+    // carol sees only her own
+    expect((await carol.get("/api/notes")).body.map((n: { title: string }) => n.title)).toEqual(["Gamma secret"]);
+  });
+
+  it("orders by team name, then newest-updated first within a team", async () => {
+    const { alice, bob, teamId } = await world();
+    const zId = (await bob.post("/api/teams").send({ name: "Zeta" })).body.id as number;
+    await bob.post(`/api/teams/${zId}/members`).send({ username: "alice" });
+    const first = (await alice.post(`/api/teams/${teamId}/notes`).send({ title: "first" })).body.id;
+    await tick();
+    await alice.post(`/api/teams/${teamId}/notes`).send({ title: "second" });
+    await tick();
+    await bob.post(`/api/teams/${zId}/notes`).send({ title: "zeta note" });
+    await tick();
+    await alice.patch(`/api/notes/${first}`).send({ title: "first (edited)" }); // moves to the top of Alpha
+
+    const titles = (await alice.get("/api/notes")).body.map((n: { title: string }) => n.title);
+    expect(titles).toEqual(["first (edited)", "second", "zeta note"]);
+  });
+
+  it("sorts team names case-insensitively, whatever the database collation", async () => {
+    const { alice } = await world(); // "Alpha"
+    for (const name of ["beta", "Zulu", "alpha2"]) {
+      const id = (await alice.post("/api/teams").send({ name })).body.id as number;
+      await alice.post(`/api/teams/${id}/notes`).send({ title: name });
+    }
+    const order = (await alice.get("/api/notes")).body.map((n: { teamName: string }) => n.teamName);
+    expect(order).toEqual(["alpha2", "beta", "Zulu"]); // not "Zulu" before lowercase names
+  });
+
+  it("has the fields a list page needs, and no full text", async () => {
+    const { alice, teamId } = await world();
+    const id = (await alice.post(`/api/teams/${teamId}/notes`).send({ title: "Shape" })).body.id;
+    await ctx.db.query("UPDATE notes SET text = $2 WHERE id = $1", [id, "y".repeat(500)]);
+    const [note] = (await alice.get("/api/notes")).body;
+    expect(note).toEqual({
+      id,
+      teamId,
+      teamName: "Alpha",
+      title: "Shape",
+      preview: "y".repeat(200),
+      createdBy: expect.any(Number),
+      createdAt: expect.any(String),
+      updatedAt: expect.any(String),
+    });
+  });
+
+  it("a removed member no longer sees that team's notes; a deleted note disappears", async () => {
+    const { alice, bob, teamId } = await world();
+    const id = (await alice.post(`/api/teams/${teamId}/notes`).send({ title: "Gone soon" })).body.id;
+    expect((await bob.get("/api/notes")).body).toHaveLength(1);
+    await alice.delete(`/api/notes/${id}`);
+    expect((await bob.get("/api/notes")).body).toEqual([]);
+    await alice.post(`/api/teams/${teamId}/notes`).send({ title: "Another" });
+    const bobId = (await alice.get(`/api/teams/${teamId}/members`)).body.find((m: { username: string }) => m.username === "bob").userId;
+    await alice.delete(`/api/teams/${teamId}/members/${bobId}`);
+    expect((await bob.get("/api/notes")).body).toEqual([]);
   });
 });
 

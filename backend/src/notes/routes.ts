@@ -42,6 +42,11 @@ export function createNoteRouter({ notes, teams }: { notes: NoteRepository; team
   const router = Router();
   const access = requireNoteAccess(notes, teams);
 
+  // Everything the user can see, across all their teams (for a "my notes" page).
+  router.get("/", async (req, res) => {
+    res.json(await notes.listForUser(userIdOf(req)));
+  });
+
   router.get("/:id", access, (req, res) => {
     res.json(req.note);
   });
