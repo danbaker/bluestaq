@@ -19,8 +19,8 @@ export interface ServerOptions {
 /** The HTTP server: the REST app plus the /ws live-sync socket. */
 export function createServer({ db, jwtSecret, secureCookie, clientOrigin, heartbeatMs, saveDelayMs }: ServerOptions) {
   const repos = createRepositories(db);
-  const app = createApp({ db, jwtSecret, secureCookie, repos });
-  const server = http.createServer(app);
+  // The server comes first, so the live-sync layer can attach to it and hand the REST app its controls.
+  const server = http.createServer();
   const realtime = attachRealtime({
     server,
     jwtSecret,
@@ -30,6 +30,8 @@ export function createServer({ db, jwtSecret, secureCookie, clientOrigin, heartb
     heartbeatMs,
     saveDelayMs,
   });
+  const app = createApp({ db, jwtSecret, secureCookie, repos, realtime: realtime.control });
+  server.on("request", app);
   server.on("close", () => void realtime.close().catch(() => {})); // idempotent; errors surface via an explicit close()
   return { app, server, realtime };
 }

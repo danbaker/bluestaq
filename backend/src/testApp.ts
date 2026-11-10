@@ -81,7 +81,11 @@ export async function setupTestServer(opts: { heartbeatMs?: number; saveDelayMs?
     };
 
   /** Opens a note like a browser tab would. `outcome` settles once the server accepts or refuses it. */
-  function openNote(cookie: string, noteName: string, opts: { socket?: HocuspocusProviderWebsocket } = {}) {
+  function openNote(
+    cookie: string,
+    noteName: string,
+    opts: { socket?: HocuspocusProviderWebsocket; sessionAwareness?: boolean } = {},
+  ) {
     const doc = new Y.Doc();
     let settle!: (v: "allowed" | "denied") => void;
     const outcome = new Promise<"allowed" | "denied">((r) => (settle = r));
@@ -89,6 +93,7 @@ export async function setupTestServer(opts: { heartbeatMs?: number; saveDelayMs?
       ...(opts.socket ? { websocketProvider: opts.socket } : { url: urlOf(), WebSocketPolyfill: socketClass(cookie) }),
       name: noteName,
       document: doc,
+      ...(opts.sessionAwareness ? { sessionAwareness: true } : {}), // lets one socket carry the same note twice
       token: "unused", // identity comes from the session cookie; the provider just needs to send something
       onAuthenticated: () => settle("allowed"),
       onAuthenticationFailed: () => settle("denied"),
@@ -96,6 +101,18 @@ export async function setupTestServer(opts: { heartbeatMs?: number; saveDelayMs?
     if (opts.socket) provider.attach();
     cleanups.push(() => provider.destroy());
     return { doc, text: doc.getText("content"), provider, outcome };
+  }
+
+  /** A bare socket (one tab with no notes open yet), for testing connection-level behavior. */
+  function openSocket(cookie: string) {
+    const ws = new WebSocket(urlOf(), { headers: { Cookie: cookie } });
+    ws.on("error", () => {});
+    cleanups.push(() => ws.terminate());
+    const opened = new Promise<void>((resolve) => ws.once("open", () => resolve()));
+    const closed = new Promise<{ code: number; reason: string }>((resolve) =>
+      ws.once("close", (code, reason) => resolve({ code, reason: reason.toString() })),
+    );
+    return { ws, opened, closed };
   }
 
   /** One shared socket (one browser tab) that can carry several notes. */
@@ -149,6 +166,10 @@ export async function setupTestServer(opts: { heartbeatMs?: number; saveDelayMs?
       return urlOf();
     },
     restart,
+    get realtime() {
+      return running.realtime;
+    },
+    openSocket,
     as,
     openNote,
     openTab,

@@ -5,7 +5,9 @@ import { signSession, verifySession } from "./jwt.js";
 describe("jwt", () => {
   it("round-trips a session", () => {
     const token = signSession("s", { id: 7, username: "dan" });
-    expect(verifySession("s", token)).toEqual({ sub: "7", username: "dan" });
+    const session = verifySession("s", token);
+    expect(session).toEqual({ sub: "7", username: "dan", exp: expect.any(Number) });
+    expect(session!.exp * 1000).toBeGreaterThan(Date.now() + 23 * 3600 * 1000); // ~24h from now
   });
 
   it("expires after 24 hours", () => {

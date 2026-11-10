@@ -2,7 +2,8 @@ import { Router } from "express";
 import bcrypt from "bcryptjs";
 import { SESSION_COOKIE, SESSION_TTL_SECONDS } from "../config.js";
 import type { UserRepository } from "../repositories/userRepository.js";
-import { signSession } from "./jwt.js";
+import type { RealtimeControl } from "../realtime/control.js";
+import { signSession, verifySession } from "./jwt.js";
 import { requireAuth } from "./middleware.js";
 
 // Compared against when the user doesn't exist, so response time doesn't reveal valid usernames.
@@ -12,9 +13,10 @@ export interface AuthOptions {
   users: UserRepository;
   jwtSecret: string;
   secureCookie: boolean;
+  realtime: RealtimeControl;
 }
 
-export function createAuthRouter({ users, jwtSecret, secureCookie }: AuthOptions): Router {
+export function createAuthRouter({ users, jwtSecret, secureCookie, realtime }: AuthOptions): Router {
   const router = Router();
 
   router.post("/login", async (req, res) => {
@@ -38,7 +40,11 @@ export function createAuthRouter({ users, jwtSecret, secureCookie }: AuthOptions
     res.json({ username: user.username });
   });
 
-  router.post("/logout", (_req, res) => {
+  router.post("/logout", (req, res) => {
+    // Logging out ends the user's live editing everywhere: close all of their open tabs.
+    const token = req.cookies?.[SESSION_COOKIE];
+    const session = typeof token === "string" ? verifySession(jwtSecret, token) : null;
+    if (session) realtime.disconnectUser(Number(session.sub));
     res.clearCookie(SESSION_COOKIE, { httpOnly: true, sameSite: "lax", secure: secureCookie });
     res.status(204).end();
   });

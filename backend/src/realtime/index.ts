@@ -1,6 +1,7 @@
+import { randomUUID } from "node:crypto";
 import type { IncomingMessage, Server as HttpServer } from "node:http";
 import type { Duplex } from "node:stream";
-import { Hocuspocus } from "@hocuspocus/server";
+import { Hocuspocus, type Connection } from "@hocuspocus/server";
 import * as Y from "yjs";
 import { WebSocketServer, type RawData, type WebSocket } from "ws";
 import { verifySession } from "../auth/jwt.js";
@@ -8,6 +9,7 @@ import { SESSION_COOKIE } from "../config.js";
 import type { NoteRepository } from "../repositories/noteRepository.js";
 import type { TeamRepository } from "../repositories/teamRepository.js";
 import { extractText } from "./noteText.js";
+import type { PresenceEntry, RealtimeControl } from "./control.js";
 
 export const WS_PATH = "/ws";
 const MAX_PAYLOAD_BYTES = 5 * 1024 * 1024;
@@ -19,6 +21,27 @@ const NOTE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 export interface ConnectionContext {
   userId: number;
   username: string;
+  /** Identifies this socket (one browser tab) in the registry. */
+  tabId: string;
+}
+
+// Close codes for our own kick-outs (4000-4999 are free for applications).
+const SIGNED_OUT = { code: 4401, reason: "Session ended" };
+const FORBIDDEN = { code: 4403, reason: "Forbidden" };
+
+/** One note open in a tab. A tab may hold several of these for the same note, so each is tracked on its own. */
+interface OpenNote {
+  noteId: string;
+  teamId: number;
+  connection: Connection;
+}
+
+/** One open browser tab: its socket, and the notes it currently has open. */
+interface Tab {
+  userId: number;
+  username: string;
+  ws: WebSocket;
+  open: Set<OpenNote>;
 }
 
 export interface RealtimeOptions {
@@ -72,6 +95,21 @@ function reject(socket: Duplex, status: number, text: string) {
   socket.destroy();
 }
 
+const MAX_TIMER_MS = 2_000_000_000; // setTimeout breaks above ~24.8 days
+
+/** Closes the socket when the login it was opened with expires (the cookie dies, so the socket must too). */
+function closeAtExpiry(ws: WebSocket, expiresAtSeconds: number) {
+  const handle: { timer?: NodeJS.Timeout } = {};
+  const arm = () => {
+    const remaining = expiresAtSeconds * 1000 - Date.now();
+    if (remaining <= 0) return ws.close(SIGNED_OUT.code, SIGNED_OUT.reason);
+    handle.timer = setTimeout(arm, Math.min(remaining, MAX_TIMER_MS)); // re-checks, so long lifetimes are fine
+    handle.timer.unref();
+  };
+  arm();
+  return handle;
+}
+
 /**
  * Live note sync over WebSocket at /ws (Yjs via Hocuspocus).
  *
@@ -85,12 +123,28 @@ function reject(socket: Duplex, status: number, text: string) {
  * open on many of them; they all share one server-side document.
  */
 export function attachRealtime({ server, jwtSecret, allowedOrigin, notes, teams, heartbeatMs = 30_000, saveDelayMs = 2_000, maxSaveDelayMs = 10_000 }: RealtimeOptions) {
+  // Every open socket (one per browser tab), and the notes each has open. Memory only.
+  const tabs = new Map<string, Tab>();
+
   // Saves in progress, so close() can wait for them before the process exits; and any that failed.
   const saving = new Set<Promise<unknown>>();
   const failedSaves: unknown[] = [];
 
   const hocuspocus = new Hocuspocus({
     quiet: true,
+    // A note counts as open in this tab once it has been authorized and loaded.
+    async connected({ documentName, context, connection }) {
+      const { tabId, teamId, userId } = context as ConnectionContext & { teamId: number };
+      const tab = tabs.get(tabId);
+      if (!tab) return;
+      const open: OpenNote = { noteId: documentName, teamId, connection };
+      tab.open.add(open);
+      connection.onClose(() => tab.open.delete(open)); // exactly this connection, never a newer one for the same note
+      // Access may have been revoked while the note was loading. Checking after registering means a
+      // kick-out either found this entry above, or the check here catches it.
+      const [note, role] = await Promise.all([notes.findById(documentName), teams.getRole(teamId, userId)]);
+      if (!note || !role) connection.close(FORBIDDEN);
+    },
     debounce: saveDelayMs,
     maxDebounce: Math.max(saveDelayMs, maxSaveDelayMs),
     // One server-side document per note, shared by every tab. It is loaded when the first tab opens...
@@ -142,12 +196,22 @@ export function attachRealtime({ server, jwtSecret, allowedOrigin, notes, teams,
       const session = token ? verifySession(jwtSecret, token) : null;
       if (!session) return reject(socket, 401, "Unauthorized");
 
-      const context: ConnectionContext = { userId: Number(session.sub), username: session.username };
+      const context: ConnectionContext = {
+        userId: Number(session.sub),
+        username: session.username,
+        tabId: randomUUID(),
+      };
       const request = toWebRequest(req);
       wss.handleUpgrade(req, socket, head, (ws: WebSocket) => {
         try {
           const connection = hocuspocus.handleConnection(ws, request, context);
           alive.add(ws);
+          tabs.set(context.tabId, { userId: context.userId, username: context.username, ws, open: new Set() });
+          const expiry = closeAtExpiry(ws, session.exp);
+          ws.on("close", () => {
+            clearTimeout(expiry.timer);
+            tabs.delete(context.tabId);
+          });
           ws.on("message", (data, isBinary) => {
             if (isBinary) connection.handleMessage(toBytes(data));
           });
@@ -202,8 +266,34 @@ export function attachRealtime({ server, jwtSecret, allowedOrigin, notes, teams,
     if (failedSaves.length) throw new AggregateError(failedSaves, `${failedSaves.length} note save(s) failed during shutdown`);
   }
 
+  const control: RealtimeControl = {
+    presence(noteId) {
+      const byUser = new Map<number, PresenceEntry>();
+      for (const tab of tabs.values()) {
+        if (![...tab.open].some((o) => o.noteId === noteId)) continue;
+        const entry = byUser.get(tab.userId) ?? { userId: tab.userId, username: tab.username, tabs: 0 };
+        entry.tabs += 1;
+        byUser.set(tab.userId, entry);
+      }
+      return [...byUser.values()].sort((a, b) => a.username.localeCompare(b.username));
+    },
+    disconnectUser(userId) {
+      for (const tab of tabs.values()) if (tab.userId === userId) tab.ws.close(SIGNED_OUT.code, SIGNED_OUT.reason);
+    },
+    removeUserFromTeam(userId, teamId) {
+      for (const tab of tabs.values()) {
+        if (tab.userId !== userId) continue;
+        for (const open of [...tab.open]) if (open.teamId === teamId) open.connection.close(FORBIDDEN);
+      }
+    },
+    closeNote(noteId) {
+      hocuspocus.closeConnections(noteId);
+    },
+  };
+
   return {
     hocuspocus,
+    control,
     /**
      * Stop accepting sockets, drop the open ones, and wait until every pending edit is saved.
      * Rejects if any save failed. Safe to call more than once.

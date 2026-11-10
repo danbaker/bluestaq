@@ -1,12 +1,21 @@
 import { Router } from "express";
 import type { TeamRepository, Role } from "../repositories/teamRepository.js";
 import type { UserRepository } from "../repositories/userRepository.js";
+import type { RealtimeControl } from "../realtime/control.js";
 import { parseId, requireTeamAdmin, requireTeamMember, userIdOf } from "./middleware.js";
 
 const isDuplicate = (err: unknown) => (err as { code?: string })?.code === "23505";
 
 /** Mount behind requireAuth. */
-export function createTeamRouter({ teams, users }: { teams: TeamRepository; users: UserRepository }): Router {
+export function createTeamRouter({
+  teams,
+  users,
+  realtime,
+}: {
+  teams: TeamRepository;
+  users: UserRepository;
+  realtime: RealtimeControl;
+}): Router {
   const router = Router();
   const member = requireTeamMember(teams);
 
@@ -90,6 +99,7 @@ export function createTeamRouter({ teams, users }: { teams: TeamRepository; user
       res.status(409).json({ error: "Cannot remove the last admin" });
       return;
     }
+    realtime.removeUserFromTeam(targetId, teamId); // their open tabs on this team's notes close now
     res.status(204).end();
   });
 

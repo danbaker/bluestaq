@@ -1,6 +1,7 @@
 import { Router } from "express";
 import type { NoteRepository } from "../repositories/noteRepository.js";
 import type { TeamRepository } from "../repositories/teamRepository.js";
+import type { RealtimeControl } from "../realtime/control.js";
 import { userIdOf } from "../teams/middleware.js";
 import { requireNoteAccess } from "./middleware.js";
 
@@ -38,7 +39,15 @@ export function createTeamNotesRouter({ notes }: { notes: NoteRepository }): Rou
 }
 
 /** Mount at /api/notes, behind requireAuth. */
-export function createNoteRouter({ notes, teams }: { notes: NoteRepository; teams: TeamRepository }): Router {
+export function createNoteRouter({
+  notes,
+  teams,
+  realtime,
+}: {
+  notes: NoteRepository;
+  teams: TeamRepository;
+  realtime: RealtimeControl;
+}): Router {
   const router = Router();
   const access = requireNoteAccess(notes, teams);
 
@@ -49,6 +58,11 @@ export function createNoteRouter({ notes, teams }: { notes: NoteRepository; team
 
   router.get("/:id", access, (req, res) => {
     res.json(req.note);
+  });
+
+  // Who has the note open right now (one entry per user, with their tab count).
+  router.get("/:id/presence", access, (req, res) => {
+    res.json(realtime.presence(req.note!.id));
   });
 
   router.patch("/:id", access, async (req, res) => {
@@ -71,6 +85,7 @@ export function createNoteRouter({ notes, teams }: { notes: NoteRepository; team
       res.status(404).json({ error: "Note not found" }); // someone else deleted it first
       return;
     }
+    realtime.closeNote(req.note!.id); // everyone editing it is disconnected
     res.status(204).end();
   });
 

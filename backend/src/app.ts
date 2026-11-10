@@ -7,6 +7,7 @@ import { createAuthRouter } from "./auth/routes.js";
 import { requireAuth } from "./auth/middleware.js";
 import { createTeamRouter } from "./teams/routes.js";
 import { createUserRouter } from "./users/routes.js";
+import { noRealtime, type RealtimeControl } from "./realtime/control.js";
 import { createNoteRouter, createTeamNotesRouter } from "./notes/routes.js";
 import { requireTeamMember } from "./teams/middleware.js";
 
@@ -16,9 +17,11 @@ export interface AppOptions {
   secureCookie?: boolean;
   /** Share repositories with other layers (e.g. realtime). Built from db if omitted. */
   repos?: Repositories;
+  /** Lets REST routes close sockets and read presence. Omit for an app with no live sync. */
+  realtime?: RealtimeControl;
 }
 
-export function createApp({ db, jwtSecret, secureCookie = false, repos = createRepositories(db) }: AppOptions) {
+export function createApp({ db, jwtSecret, secureCookie = false, repos = createRepositories(db), realtime = noRealtime }: AppOptions) {
   const app = express();
   app.use(cors({ origin: true, credentials: true }));
   app.use(express.json());
@@ -31,7 +34,7 @@ export function createApp({ db, jwtSecret, secureCookie = false, repos = createR
   app.get("/api/health", (_req, res) => {
     res.json({ status: "ok" });
   });
-  app.use("/api/auth", createAuthRouter({ users, jwtSecret, secureCookie }));
+  app.use("/api/auth", createAuthRouter({ users, jwtSecret, secureCookie, realtime }));
 
   // Protected
   app.get("/api/hello", requireAuth(jwtSecret), (req, res) => {
@@ -41,8 +44,8 @@ export function createApp({ db, jwtSecret, secureCookie = false, repos = createR
 
   app.use("/api/users", auth, createUserRouter({ users }));
   app.use("/api/teams/:id/notes", auth, requireTeamMember(teams), createTeamNotesRouter({ notes }));
-  app.use("/api/teams", auth, createTeamRouter({ teams, users }));
-  app.use("/api/notes", auth, createNoteRouter({ notes, teams }));
+  app.use("/api/teams", auth, createTeamRouter({ teams, users, realtime }));
+  app.use("/api/notes", auth, createNoteRouter({ notes, teams, realtime }));
 
   // API errors are always JSON, never an HTML page or a stack trace.
   app.use("/api", (_req, res) => {
