@@ -1,31 +1,11 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import request from "supertest";
-import bcrypt from "bcryptjs";
-import { createApp } from "../app.js";
-import { createTestDb, TEST_SECRET, TEST_USER } from "../db/testDb.js";
-import { createUserRepository } from "../repositories/userRepository.js";
+import { TEST_USER } from "../db/testDb.js";
+import { setupTestApp, PASSWORD } from "../testApp.js";
 
-const PASSWORD = "password123";
-
-async function setup() {
-  const db = await createTestDb();
-  const users = createUserRepository(db);
-  const hash = await bcrypt.hash(PASSWORD, 4);
-  for (const name of ["alice", "bob", "carol"]) await users.create(name, hash);
-  const app = createApp({ db, jwtSecret: TEST_SECRET });
-
-  const as = async (username: string, password = PASSWORD) => {
-    const agent = request.agent(app);
-    const res = await agent.post("/api/auth/login").send({ username, password });
-    expect(res.status).toBe(200);
-    return agent;
-  };
-  return { app, as };
-}
-
-let ctx: Awaited<ReturnType<typeof setup>>;
+let ctx: Awaited<ReturnType<typeof setupTestApp>>;
 beforeEach(async () => {
-  ctx = await setup();
+  ctx = await setupTestApp();
 });
 
 describe("auth required", () => {

@@ -28,6 +28,18 @@ const statements: string[] = [
      PRIMARY KEY (team_id, user_id)
    )`,
   `CREATE INDEX IF NOT EXISTS team_members_user_idx ON team_members (user_id)`,
+  // content = Yjs document state (written by the real-time sync); text = plain-text copy for previews/search.
+  `CREATE TABLE IF NOT EXISTS notes (
+     id         UUID PRIMARY KEY,
+     team_id    INTEGER NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+     title      TEXT NOT NULL,
+     content    BYTEA,
+     text       TEXT NOT NULL DEFAULT '',
+     created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+   )`,
+  `CREATE INDEX IF NOT EXISTS notes_team_updated_idx ON notes (team_id, updated_at DESC)`,
 ];
 
 export async function createSchema(db: Db): Promise<void> {

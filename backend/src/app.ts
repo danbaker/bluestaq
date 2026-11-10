@@ -8,6 +8,9 @@ import { requireAuth } from "./auth/middleware.js";
 import { createTeamRepository } from "./repositories/teamRepository.js";
 import { createTeamRouter } from "./teams/routes.js";
 import { createUserRouter } from "./users/routes.js";
+import { createNoteRepository } from "./repositories/noteRepository.js";
+import { createNoteRouter, createTeamNotesRouter } from "./notes/routes.js";
+import { requireTeamMember } from "./teams/middleware.js";
 
 export interface AppOptions {
   db: Db;
@@ -23,6 +26,8 @@ export function createApp({ db, jwtSecret, secureCookie = false }: AppOptions) {
 
   const users = createUserRepository(db);
   const teams = createTeamRepository(db);
+  const notes = createNoteRepository(db);
+  const auth = requireAuth(jwtSecret);
 
   // Public
   app.get("/api/health", (_req, res) => {
@@ -36,8 +41,10 @@ export function createApp({ db, jwtSecret, secureCookie = false }: AppOptions) {
     res.json({ message: `Hello, ${name}!` });
   });
 
-  app.use("/api/users", requireAuth(jwtSecret), createUserRouter({ users }));
-  app.use("/api/teams", requireAuth(jwtSecret), createTeamRouter({ teams, users }));
+  app.use("/api/users", auth, createUserRouter({ users }));
+  app.use("/api/teams/:id/notes", auth, requireTeamMember(teams), createTeamNotesRouter({ notes }));
+  app.use("/api/teams", auth, createTeamRouter({ teams, users }));
+  app.use("/api/notes", auth, createNoteRouter({ notes, teams }));
 
   // Malformed JSON -> 400; anything unexpected -> 500 JSON (never a stack trace).
   const onError: ErrorRequestHandler = (err, _req, res, _next) => {
