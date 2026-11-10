@@ -1,11 +1,13 @@
 import type { IncomingMessage, Server as HttpServer } from "node:http";
 import type { Duplex } from "node:stream";
 import { Hocuspocus } from "@hocuspocus/server";
+import * as Y from "yjs";
 import { WebSocketServer, type RawData, type WebSocket } from "ws";
 import { verifySession } from "../auth/jwt.js";
 import { SESSION_COOKIE } from "../config.js";
 import type { NoteRepository } from "../repositories/noteRepository.js";
 import type { TeamRepository } from "../repositories/teamRepository.js";
+import { extractText } from "./noteText.js";
 
 export const WS_PATH = "/ws";
 const MAX_PAYLOAD_BYTES = 5 * 1024 * 1024;
@@ -28,6 +30,10 @@ export interface RealtimeOptions {
   teams: TeamRepository;
   /** How often to ping sockets; one that misses a whole interval is dropped. Default 30s. */
   heartbeatMs?: number;
+  /** Save a note this long after the last edit (default 2s), and at least every 10s while it is being edited. */
+  saveDelayMs?: number;
+  /** Save at least this often while a note is being edited non-stop (default 10s, never below saveDelayMs). */
+  maxSaveDelayMs?: number;
 }
 
 function parseCookies(header: string | undefined): Record<string, string> {
@@ -78,9 +84,41 @@ function reject(socket: Duplex, status: number, text: string) {
  * One socket is one browser tab. The same user may hold many sockets, and the same note may be
  * open on many of them; they all share one server-side document.
  */
-export function attachRealtime({ server, jwtSecret, allowedOrigin, notes, teams, heartbeatMs = 30_000 }: RealtimeOptions) {
+export function attachRealtime({ server, jwtSecret, allowedOrigin, notes, teams, heartbeatMs = 30_000, saveDelayMs = 2_000, maxSaveDelayMs = 10_000 }: RealtimeOptions) {
+  // Saves in progress, so close() can wait for them before the process exits; and any that failed.
+  const saving = new Set<Promise<unknown>>();
+  const failedSaves: unknown[] = [];
+
   const hocuspocus = new Hocuspocus({
     quiet: true,
+    debounce: saveDelayMs,
+    maxDebounce: Math.max(saveDelayMs, maxSaveDelayMs),
+    // One server-side document per note, shared by every tab. It is loaded when the first tab opens...
+    async onLoadDocument({ documentName, document }) {
+      const saved = await notes.loadContent(documentName);
+      if (!saved) return;
+      try {
+        Y.applyUpdate(document, saved);
+      } catch (err) {
+        // Refuse to open rather than start empty: the next save would overwrite the (damaged) data.
+        console.error(`Note ${documentName} has unreadable saved content; not opening it`, err);
+        throw err;
+      }
+    },
+    // ...and saved after a pause in typing, and when the last tab closes (one save however many tabs).
+    async onStoreDocument({ documentName, document }) {
+      const save = notes.saveContent(documentName, Y.encodeStateAsUpdate(document), extractText(document));
+      saving.add(save);
+      try {
+        await save; // false = note was deleted meanwhile; nothing to save to
+      } catch (err) {
+        console.error(`Failed to save note ${documentName}`, err);
+        failedSaves.push(err);
+        throw err;
+      } finally {
+        saving.delete(save);
+      }
+    },
     async onAuthenticate({ documentName, context }) {
       const { userId } = context as ConnectionContext;
       const note = NOTE_ID.test(documentName) ? await notes.findById(documentName) : null;
@@ -144,16 +182,34 @@ export function attachRealtime({ server, jwtSecret, allowedOrigin, notes, teams,
   }, heartbeatMs);
   heartbeat.unref();
 
+  let closing: Promise<void> | null = null;
+
+  async function shutDown() {
+    clearInterval(heartbeat);
+    server.off("upgrade", onUpgrade);
+    failedSaves.length = 0;
+    hocuspocus.flushPendingStores();
+    hocuspocus.closeConnections();
+    wss.clients.forEach((c) => c.terminate());
+    wss.close();
+    // Saves start asynchronously (and closing the last connection triggers one more), so keep
+    // waiting until nothing is saving and every document has been unloaded.
+    for (let i = 0; i < 100; i++) {
+      await new Promise((r) => setImmediate(r));
+      if (saving.size) await Promise.allSettled([...saving]);
+      else if (hocuspocus.getDocumentsCount() === 0) break;
+    }
+    if (failedSaves.length) throw new AggregateError(failedSaves, `${failedSaves.length} note save(s) failed during shutdown`);
+  }
+
   return {
     hocuspocus,
-    /** Stop accepting sockets, drop the open ones, and release open documents. */
-    close() {
-      clearInterval(heartbeat);
-      server.off("upgrade", onUpgrade);
-      hocuspocus.closeConnections();
-      hocuspocus.flushPendingStores();
-      wss.clients.forEach((c) => c.terminate());
-      wss.close();
+    /**
+     * Stop accepting sockets, drop the open ones, and wait until every pending edit is saved.
+     * Rejects if any save failed. Safe to call more than once.
+     */
+    close(): Promise<void> {
+      return (closing ??= shutDown());
     },
   };
 }

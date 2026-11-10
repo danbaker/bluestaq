@@ -74,6 +74,21 @@ export function createNoteRepository(db: Db) {
       return rows[0] ? { ...toNote(rows[0]), text: rows[0].text ?? "" } : null;
     },
 
+    /** The saved Yjs document state, or null if the note has never been edited (or doesn't exist). */
+    async loadContent(id: string): Promise<Uint8Array | null> {
+      const { rows } = await db.query<{ content: Buffer | null }>("SELECT content FROM notes WHERE id = $1", [id]);
+      return rows[0]?.content ?? null;
+    },
+
+    /** Saves the Yjs state and its plain-text copy. Returns false if the note no longer exists. */
+    async saveContent(id: string, content: Uint8Array, text: string): Promise<boolean> {
+      const { rowCount } = await db.query(
+        "UPDATE notes SET content = $2, text = $3, updated_at = now() WHERE id = $1",
+        [id, Buffer.from(content), text],
+      );
+      return (rowCount ?? 0) > 0;
+    },
+
     /** Returns true if a note was deleted. */
     async delete(id: string): Promise<boolean> {
       const { rowCount } = await db.query("DELETE FROM notes WHERE id = $1", [id]);

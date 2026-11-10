@@ -12,10 +12,12 @@ export interface ServerOptions {
   clientOrigin: string;
   /** Socket ping interval in ms (default 30s). */
   heartbeatMs?: number;
+  /** Delay before saving after the last edit (default 2s). */
+  saveDelayMs?: number;
 }
 
 /** The HTTP server: the REST app plus the /ws live-sync socket. */
-export function createServer({ db, jwtSecret, secureCookie, clientOrigin, heartbeatMs }: ServerOptions) {
+export function createServer({ db, jwtSecret, secureCookie, clientOrigin, heartbeatMs, saveDelayMs }: ServerOptions) {
   const repos = createRepositories(db);
   const app = createApp({ db, jwtSecret, secureCookie, repos });
   const server = http.createServer(app);
@@ -26,7 +28,8 @@ export function createServer({ db, jwtSecret, secureCookie, clientOrigin, heartb
     notes: repos.notes,
     teams: repos.teams,
     heartbeatMs,
+    saveDelayMs,
   });
-  server.on("close", () => realtime.close());
+  server.on("close", () => void realtime.close().catch(() => {})); // idempotent; errors surface via an explicit close()
   return { app, server, realtime };
 }

@@ -8,7 +8,8 @@ import { createServer } from "./server.js";
 import request from "supertest";
 import bcrypt from "bcryptjs";
 import { createApp } from "./app.js";
-import { createTestDb, TEST_SECRET } from "./db/testDb.js";
+import type { Pool } from "pg";
+import { createTestDb, resetRealTestDb, TEST_SECRET } from "./db/testDb.js";
 import { createUserRepository } from "./repositories/userRepository.js";
 
 export const PASSWORD = "password123";
@@ -34,26 +35,35 @@ export async function setupTestApp() {
 
 export const TEST_ORIGIN = "http://app.test";
 
-/** Real server on an ephemeral port, with users alice/bob/carol. Call close() when done. */
-export async function setupTestServer(opts: { heartbeatMs?: number } = {}) {
-  const db = await createTestDb();
+/**
+ * Real HTTP + WebSocket server on an ephemeral port, with users alice/bob/carol. Call close() when done.
+ * Pass `realDb` (see connectRealTestDb) to use real Postgres instead of the in-memory one;
+ * its tables are emptied first. The caller owns the pool and must end it.
+ */
+export async function setupTestServer(opts: { heartbeatMs?: number; saveDelayMs?: number; realDb?: Pool } = {}) {
+  if (opts.realDb) await resetRealTestDb(opts.realDb);
+  const db = opts.realDb ?? (await createTestDb());
   const hash = await bcrypt.hash(PASSWORD, 4);
   const users = createUserRepository(db);
   for (const name of ["alice", "bob", "carol"]) await users.create(name, hash);
 
-  const { server, realtime } = createServer({
-    db,
-    jwtSecret: TEST_SECRET,
-    clientOrigin: TEST_ORIGIN,
-    heartbeatMs: opts.heartbeatMs,
-  });
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const port = (server.address() as AddressInfo).port;
-  const wsUrl = `ws://127.0.0.1:${port}/ws`;
+  const startServer = async () => {
+    const created = createServer({
+      db,
+      jwtSecret: TEST_SECRET,
+      clientOrigin: TEST_ORIGIN,
+      heartbeatMs: opts.heartbeatMs,
+      saveDelayMs: opts.saveDelayMs ?? 50,
+    });
+    await new Promise<void>((resolve) => created.server.listen(0, "127.0.0.1", resolve));
+    return { ...created, port: (created.server.address() as AddressInfo).port };
+  };
+  let running = await startServer();
+  const urlOf = () => `ws://127.0.0.1:${running.port}/ws`;
 
   /** Logged-in REST agent plus the raw session cookie (for opening sockets). */
   const as = async (username: string) => {
-    const agent = request.agent(server);
+    const agent = request.agent(running.server);
     const res = await agent.post("/api/auth/login").send({ username, password: PASSWORD });
     expect(res.status).toBe(200);
     const cookie = (res.headers["set-cookie"] as unknown as string[])[0].split(";")[0];
@@ -76,7 +86,7 @@ export async function setupTestServer(opts: { heartbeatMs?: number } = {}) {
     let settle!: (v: "allowed" | "denied") => void;
     const outcome = new Promise<"allowed" | "denied">((r) => (settle = r));
     const provider = new HocuspocusProvider({
-      ...(opts.socket ? { websocketProvider: opts.socket } : { url: wsUrl, WebSocketPolyfill: socketClass(cookie) }),
+      ...(opts.socket ? { websocketProvider: opts.socket } : { url: urlOf(), WebSocketPolyfill: socketClass(cookie) }),
       name: noteName,
       document: doc,
       token: "unused", // identity comes from the session cookie; the provider just needs to send something
@@ -90,7 +100,7 @@ export async function setupTestServer(opts: { heartbeatMs?: number } = {}) {
 
   /** One shared socket (one browser tab) that can carry several notes. */
   function openTab(cookie: string) {
-    const socket = new HocuspocusProviderWebsocket({ url: wsUrl, WebSocketPolyfill: socketClass(cookie) });
+    const socket = new HocuspocusProviderWebsocket({ url: urlOf(), WebSocketPolyfill: socketClass(cookie) });
     cleanups.push(() => socket.destroy());
     return socket;
   }
@@ -98,7 +108,7 @@ export async function setupTestServer(opts: { heartbeatMs?: number } = {}) {
   /** Raw upgrade attempt: resolves with the HTTP status that refused it, or "open". */
   function rawConnect(opts: { cookie?: string; origin?: string; path?: string } = {}) {
     return new Promise<number | "open">((resolve) => {
-      const ws = new WebSocket(`ws://127.0.0.1:${port}${opts.path ?? "/ws"}`, {
+      const ws = new WebSocket(`ws://127.0.0.1:${running.port}${opts.path ?? "/ws"}`, {
         headers: { ...(opts.cookie ? { Cookie: opts.cookie } : {}), ...(opts.origin ? { Origin: opts.origin } : {}) },
       });
       ws.on("unexpected-response", (_req, res) => {
@@ -116,11 +126,29 @@ export async function setupTestServer(opts: { heartbeatMs?: number } = {}) {
   const sessionCookieFor = (userId: number, secret = TEST_SECRET, expiresIn: number = 3600) =>
     `session=${jwt.sign({ username: "x" }, secret, { subject: String(userId), expiresIn })}`;
 
+  /** Stops the server (saving open notes, like a real shutdown) and starts a fresh one on the same database. */
+  async function stopServer() {
+    await running.realtime.close();
+    running.server.closeAllConnections();
+    await new Promise<void>((resolve) => running.server.close(() => resolve()));
+  }
+  async function restart() {
+    await stopServer();
+    running = await startServer();
+  }
+
   return {
     db,
-    server,
-    port,
-    wsUrl,
+    get server() {
+      return running.server;
+    },
+    get port() {
+      return running.port;
+    },
+    get wsUrl() {
+      return urlOf();
+    },
+    restart,
     as,
     openNote,
     openTab,
@@ -128,9 +156,7 @@ export async function setupTestServer(opts: { heartbeatMs?: number } = {}) {
     sessionCookieFor,
     async close() {
       cleanups.splice(0).forEach((fn) => fn());
-      realtime.close();
-      server.closeAllConnections();
-      await new Promise<void>((resolve) => server.close(() => resolve()));
+      await stopServer();
     },
   };
 }

@@ -1,24 +1,11 @@
 // Runs against REAL Postgres (database "bluestaq_test", created on demand). pg-mem can't test
 // row locking, so races live here. The suite skips itself if Postgres isn't reachable.
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { createPool } from "../db/client.js";
-import { ensureDatabase } from "../db/ensureDatabase.js";
-import { createSchema } from "../db/schema.js";
+import { connectRealTestDb } from "../db/testDb.js";
 import { createTeamRepository } from "./teamRepository.js";
 import { createUserRepository } from "./userRepository.js";
 
-const URL =
-  process.env.TEST_PGCONNECTIONSTRING ?? "postgresql://userx:pw@localhost:5432/bluestaq_test?sslmode=disable";
-
-let pool: ReturnType<typeof createPool> | null = null;
-try {
-  await ensureDatabase(URL);
-  pool = createPool(URL);
-  await pool.query("SELECT 1");
-  await createSchema(pool);
-} catch {
-  pool = null;
-}
+const pool = await connectRealTestDb("bluestaq_test");
 
 describe.skipIf(!pool)("teamRepository on real Postgres", () => {
   const db = pool!;
