@@ -46,10 +46,6 @@ export function createUserRepository(db: Db) {
       );
       return toUser(rows[0]);
     },
-    async listIds(): Promise<number[]> {
-      const { rows } = await db.query<{ id: number }>("SELECT id FROM users ORDER BY id");
-      return rows.map((r) => r.id);
-    },
     async setAdmin(id: number, isAdmin: boolean): Promise<void> {
       await db.query("UPDATE users SET is_admin = $2 WHERE id = $1", [id, isAdmin]);
     },

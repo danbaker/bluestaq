@@ -110,9 +110,10 @@ describe("working with private notes", () => {
     await alice.post(`/api/teams/${teamId}/notes`).send({ title: "For the team" });
 
     const list = (await alice.get("/api/notes")).body as { title: string; teamName: string; personal: boolean }[];
-    expect(list.map((n) => [n.teamName, n.title, n.personal]).sort()).toEqual([
-      ["Alpha", "For the team", false],
+    // private notes come first (even though "Alpha" sorts before "Private"), then team notes
+    expect(list.map((n) => [n.teamName, n.title, n.personal])).toEqual([
       ["Private", "Mine only", true],
+      ["Alpha", "For the team", false],
     ]);
   });
 });

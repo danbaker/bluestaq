@@ -68,7 +68,7 @@ export function createNoteRepository(db: Db) {
       return rows.map((r) => ({ ...toNote(r), preview: r.preview ?? "" }));
     },
 
-    /** Every note on every team the user belongs to: by team name (case-insensitive), then newest-updated first. */
+    /** Every note on every team the user belongs to: private notes first, then by team name (case-insensitive), then newest-updated first. */
     async listForUser(userId: number): Promise<UserNoteSummary[]> {
       const { rows } = await db.query<NoteRow>(
         `SELECT n.id, n.team_id, n.title, n.created_by, n.created_at, n.updated_at,
@@ -76,7 +76,7 @@ export function createNoteRepository(db: Db) {
            FROM notes n
            JOIN team_members m ON m.team_id = n.team_id AND m.user_id = $1
            JOIN teams t ON t.id = n.team_id
-          ORDER BY lower(t.name), t.name, n.team_id, n.updated_at DESC, n.id`,
+          ORDER BY (t.personal_owner_id IS NULL), lower(t.name), t.name, n.team_id, n.updated_at DESC, n.id`,
         [userId],
       );
       return rows.map((r) => ({ ...toNote(r), preview: r.preview ?? "", teamName: r.team_name!, personal: Boolean(r.personal) }));

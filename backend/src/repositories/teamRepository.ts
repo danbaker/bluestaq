@@ -70,6 +70,9 @@ export function createTeamRepository(db: Db) {
     async ensurePersonalTeam(userId: number): Promise<number> {
       const find = async (q: Queryable) =>
         (await q.query<{ id: number }>("SELECT id FROM teams WHERE personal_owner_id = $1", [userId])).rows[0]?.id;
+      // Almost always it already exists (this runs at every login): one query, no transaction.
+      const existing = await find(db);
+      if (existing !== undefined && (await roleIn(db, existing, userId))) return existing;
       try {
         return await withTransaction(db, async (tx) => {
           const teamId =
@@ -141,16 +144,14 @@ export function createTeamRepository(db: Db) {
     },
 
     async addMember(teamId: number, userId: number, role: Role): Promise<void> {
-      // Defense in depth: whatever calls this, a private space never gets a second member.
-      const { rows } = await db.query<{ personal_owner_id: number | null }>("SELECT personal_owner_id FROM teams WHERE id = $1", [teamId]);
-      if (rows[0]?.personal_owner_id != null && rows[0].personal_owner_id !== userId) {
-        throw new Error("A private space cannot have other members");
-      }
-      await db.query("INSERT INTO team_members (team_id, user_id, role) VALUES ($1, $2, $3)", [
-        teamId,
-        userId,
-        role,
-      ]);
+      // One statement, so the rule can't be raced: a private space never gets anyone but its owner.
+      const { rowCount } = await db.query(
+        `INSERT INTO team_members (team_id, user_id, role)
+         SELECT CAST($1 AS integer), CAST($2 AS integer), CAST($3 AS text)
+          WHERE NOT EXISTS (SELECT 1 FROM teams WHERE id = CAST($1 AS integer) AND personal_owner_id IS NOT NULL AND personal_owner_id <> CAST($2 AS integer))`,
+        [teamId, userId, role],
+      );
+      if (!rowCount) throw new Error("A private space cannot have other members");
     },
 
     countAdmins: (teamId: number) => countAdmins(db, teamId),
