@@ -12,12 +12,14 @@ As a note is edited, each users view of that note needs to update (just like Goo
 Anyone on a team can delete any of the notes.
 A user can open the same note multiple times.
 No "read-only" role.
-No "user-only" notes. (Notes are per-team)
 What about deployment and sockets and notes being edited? -- Edits stay local on the browser. When the server restarts and the browsers reconnect, each browser sends its notes updates. The note is updated. All views are updated.
 The note "Title" is not part of the live update. I would change this, so it acts just like the note body (as users alter the title, other users see those changes live).
 It would be nice to be able to share a note with other users or other teams. I did not implement this.
 It would be nice to have rich text editing. I did not implement this.
 It might be nice to allow comments. So, users can add comments to a specific section of the note (like Google Docs).
 Searching for old notes would be nice.
-
+We could use localstorage (or IndexedDB). Allowing offline editing and sending edits if a tab closed before we could send the edit to the backend.
+We could mark deleted notes as deleted, so they can be recovered.
+We could show who has a note open (like Google Docs).
+We could allow "tags" per note (for filtering/searching).
 
