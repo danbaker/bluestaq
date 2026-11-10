@@ -136,14 +136,19 @@ export function attachRealtime({ server, jwtSecret, allowedOrigin, notes, teams,
     async connected({ documentName, context, connection }) {
       const { tabId, teamId, userId } = context as ConnectionContext & { teamId: number };
       const tab = tabs.get(tabId);
-      if (!tab) return;
+      if (!tab) return connection.close(FORBIDDEN); // an untracked connection could never be kicked out: refuse it
       const open: OpenNote = { noteId: documentName, teamId, connection };
       tab.open.add(open);
       connection.onClose(() => tab.open.delete(open)); // exactly this connection, never a newer one for the same note
       // Access may have been revoked while the note was loading. Checking after registering means a
       // kick-out either found this entry above, or the check here catches it.
-      const [note, role] = await Promise.all([notes.findById(documentName), teams.getRole(teamId, userId)]);
-      if (!note || !role) connection.close(FORBIDDEN);
+      try {
+        const [note, role] = await Promise.all([notes.findById(documentName), teams.getRole(teamId, userId)]);
+        if (!note || !role) connection.close(FORBIDDEN);
+      } catch (err) {
+        console.error(`Could not re-check access to note ${documentName}; closing it`, err);
+        connection.close(FORBIDDEN); // fail closed: when in doubt, no access
+      }
     },
     debounce: saveDelayMs,
     maxDebounce: Math.max(saveDelayMs, maxSaveDelayMs),
@@ -204,9 +209,10 @@ export function attachRealtime({ server, jwtSecret, allowedOrigin, notes, teams,
       const request = toWebRequest(req);
       wss.handleUpgrade(req, socket, head, (ws: WebSocket) => {
         try {
+          // Register the tab first: every connection must be findable by logout, removal and presence.
+          tabs.set(context.tabId, { userId: context.userId, username: context.username, ws, open: new Set() });
           const connection = hocuspocus.handleConnection(ws, request, context);
           alive.add(ws);
-          tabs.set(context.tabId, { userId: context.userId, username: context.username, ws, open: new Set() });
           const expiry = closeAtExpiry(ws, session.exp);
           ws.on("close", () => {
             clearTimeout(expiry.timer);
@@ -223,6 +229,7 @@ export function attachRealtime({ server, jwtSecret, allowedOrigin, notes, teams,
           ws.on("error", () => {});
         } catch (err) {
           console.error("Failed to set up WebSocket connection", err);
+          tabs.delete(context.tabId);
           ws.terminate();
         }
       });

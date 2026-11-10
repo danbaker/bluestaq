@@ -241,6 +241,36 @@ describe("kick-outs cannot be dodged", () => {
   });
 });
 
+describe("fails closed", () => {
+  it("if the database errors during the access re-check after loading, the connection is closed, not left open", async () => {
+    const { alice, bob, noteId } = await world(); // nobody has the note open, so bob's open has to load it
+
+    // Opening a note authorizes, then loads it, then re-checks access. Fail the re-check, i.e. any role lookup after the load.
+    const realQuery = ctx.db.query.bind(ctx.db) as (sql: string, params?: unknown[]) => Promise<unknown>;
+    let loaded = false;
+    const errorLog = vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(ctx.db, "query").mockImplementation((async (sql: string, params?: unknown[]) => {
+      if (/SELECT content FROM notes/.test(sql)) loaded = true;
+      if (loaded && /SELECT role FROM team_members/.test(sql)) throw new Error("database went away");
+      return realQuery(sql, params);
+    }) as never);
+
+    const bobs = ctx.openNote(bob.cookie, noteId);
+    await Promise.race([bobs.outcome, pause(1500)]);
+    await pause(400);
+    expect(loaded).toBe(true);
+    expect(errorLog.mock.calls.some(([m]) => String(m).includes("closing it"))).toBe(true); // logged
+    vi.restoreAllMocks();
+
+    expect(ctx.realtime.control.presence(noteId).map((p) => p.username)).not.toContain("bob");
+    const alices = ctx.openNote(alice.cookie, noteId);
+    await alices.outcome;
+    alices.text.insert(0, "anything");
+    await pause(300);
+    expect(bobs.text.toString()).toBe("");
+  });
+});
+
 describe("deleting a note closes it for everyone", () => {
   it("disconnects all tabs on that note, and leaves their other notes alone", async () => {
     const { alice, bob, note, noteId } = await world();
