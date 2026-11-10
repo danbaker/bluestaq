@@ -1,8 +1,8 @@
 import { Router } from "express";
-import type { TeamRepository, Role } from "../repositories/teamRepository.js";
+import { PERSONAL_TEAM_NAME, type TeamRepository, type Role } from "../repositories/teamRepository.js";
 import type { UserRepository } from "../repositories/userRepository.js";
 import type { RealtimeControl } from "../realtime/control.js";
-import { parseId, requireTeamAdmin, requireTeamMember, userIdOf } from "./middleware.js";
+import { parseId, rejectPrivateSpace, requireTeamAdmin, requireTeamMember, userIdOf } from "./middleware.js";
 
 const isDuplicate = (err: unknown) => (err as { code?: string })?.code === "23505";
 
@@ -29,6 +29,10 @@ export function createTeamRouter({
       res.status(400).json({ error: "name is required (max 100 characters)" });
       return;
     }
+    if (name.toLowerCase() === PERSONAL_TEAM_NAME.toLowerCase()) {
+      res.status(400).json({ error: `"${PERSONAL_TEAM_NAME}" is reserved for your private space; pick another name` });
+      return;
+    }
     res.status(201).json(await teams.create(name, userIdOf(req)));
   });
 
@@ -36,7 +40,7 @@ export function createTeamRouter({
     res.json(await teams.listMembers(req.membership!.teamId));
   });
 
-  router.post("/:id/members", member, requireTeamAdmin, async (req, res) => {
+  router.post("/:id/members", member, rejectPrivateSpace, requireTeamAdmin, async (req, res) => {
     const { username, role = "member" } = req.body ?? {};
     if (typeof username !== "string" || !username || (role !== "member" && role !== "admin")) {
       res.status(400).json({ error: "username and a role of 'member' or 'admin' are required" });
@@ -59,7 +63,7 @@ export function createTeamRouter({
     res.status(201).json({ userId: user.id, username: user.username, role });
   });
 
-  router.patch("/:id/members/:userId", member, requireTeamAdmin, async (req, res) => {
+  router.patch("/:id/members/:userId", member, rejectPrivateSpace, requireTeamAdmin, async (req, res) => {
     const targetId = parseId(req.params.userId);
     const role = req.body?.role;
     if (role !== "member" && role !== "admin") {
@@ -79,7 +83,7 @@ export function createTeamRouter({
   });
 
   // Admins can remove anyone; any member can remove themselves (leave).
-  router.delete("/:id/members/:userId", member, async (req, res) => {
+  router.delete("/:id/members/:userId", member, rejectPrivateSpace, async (req, res) => {
     const { teamId, role } = req.membership!;
     const targetId = parseId(req.params.userId);
     if (!targetId) {

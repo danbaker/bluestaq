@@ -15,6 +15,7 @@ describe.skipIf(!pool)("teamRepository on real Postgres", () => {
 
   afterAll(async () => {
     await db.query("DELETE FROM teams WHERE name LIKE $1", [`race-${suffix}%`]);
+    await db.query("DELETE FROM teams WHERE personal_owner_id IN (SELECT id FROM users WHERE username LIKE $1)", [`race${suffix}%`]);
     await db.query("DELETE FROM users WHERE username LIKE $1", [`race${suffix}%`]);
     await db.end();
   });
@@ -43,6 +44,33 @@ describe.skipIf(!pool)("teamRepository on real Postgres", () => {
       expect([...results].sort()).toEqual(["last_admin", "updated"]);
       expect(await teams.countAdmins(team.id)).toBe(1);
     }
+  });
+
+  it("giving a user a private space from many places at once creates exactly one (x25)", async () => {
+    for (let i = 200; i < 225; i++) {
+      const user = await users.create(`race${suffix}p${i}`, "x");
+      const ids = await Promise.all([1, 2, 3, 4].map(() => teams.ensurePersonalTeam(user.id)));
+      expect(new Set(ids).size).toBe(1);
+      const { rows } = await db.query("SELECT count(*)::int AS n FROM teams WHERE personal_owner_id = $1", [user.id]);
+      expect(rows[0].n).toBe(1);
+      expect(await teams.getRole(ids[0], user.id)).toBe("admin");
+    }
+  });
+
+  it("the repository itself refuses to add a second member to a private space", async () => {
+    const owner = await users.create(`race${suffix}own`, "x");
+    const other = await users.create(`race${suffix}oth`, "x");
+    const spaceId = await teams.ensurePersonalTeam(owner.id);
+    await expect(teams.addMember(spaceId, other.id, "member")).rejects.toThrow(/private space/);
+    expect(await teams.getRole(spaceId, other.id)).toBeNull();
+  });
+
+  it("a private space whose membership row is missing is repaired", async () => {
+    const user = await users.create(`race${suffix}repair`, "x");
+    const id = await teams.ensurePersonalTeam(user.id);
+    await db.query("DELETE FROM team_members WHERE team_id = $1", [id]);
+    expect(await teams.ensurePersonalTeam(user.id)).toBe(id);
+    expect(await teams.getRole(id, user.id)).toBe("admin");
   });
 
   it("create is atomic: a failing membership insert leaves no orphan team", async () => {

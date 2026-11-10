@@ -10,6 +10,7 @@ import bcrypt from "bcryptjs";
 import { createApp } from "./app.js";
 import type { Pool } from "pg";
 import { createTestDb, resetRealTestDb, TEST_SECRET } from "./db/testDb.js";
+import { ensurePersonalTeams } from "./db/seed.js";
 import { createUserRepository } from "./repositories/userRepository.js";
 
 export const PASSWORD = "password123";
@@ -20,6 +21,7 @@ export async function setupTestApp() {
   const hash = await bcrypt.hash(PASSWORD, 4);
   const users = createUserRepository(db);
   for (const name of ["alice", "bob", "carol"]) await users.create(name, hash);
+  await ensurePersonalTeams(db);
   const app = createApp({ db, jwtSecret: TEST_SECRET });
 
   const as = async (username: string, password = PASSWORD) => {
@@ -46,6 +48,7 @@ export async function setupTestServer(opts: { heartbeatMs?: number; saveDelayMs?
   const hash = await bcrypt.hash(PASSWORD, 4);
   const users = createUserRepository(db);
   for (const name of ["alice", "bob", "carol"]) await users.create(name, hash);
+  await ensurePersonalTeams(db);
 
   const startServer = async () => {
     const created = createServer({
@@ -62,9 +65,9 @@ export async function setupTestServer(opts: { heartbeatMs?: number; saveDelayMs?
   const urlOf = () => `ws://127.0.0.1:${running.port}/ws`;
 
   /** Logged-in REST agent plus the raw session cookie (for opening sockets). */
-  const as = async (username: string) => {
+  const as = async (username: string, password = PASSWORD) => {
     const agent = request.agent(running.server);
-    const res = await agent.post("/api/auth/login").send({ username, password: PASSWORD });
+    const res = await agent.post("/api/auth/login").send({ username, password });
     expect(res.status).toBe(200);
     const cookie = (res.headers["set-cookie"] as unknown as string[])[0].split(";")[0];
     return { agent, cookie };

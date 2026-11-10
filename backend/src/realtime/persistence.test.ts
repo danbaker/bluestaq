@@ -53,6 +53,26 @@ describe.skipIf(!pool)("saving and loading", () => {
     await waitFor(() => expect(extractText(second.doc)).toBe("remember the milk"));
   });
 
+  it("a private note is saved and comes back, like any other, and stays private after a restart", async () => {
+    const { alice } = await world();
+    const space = ((await alice.agent.get("/api/teams")).body as { id: number; personal: boolean }[]).find((t) => t.personal)!;
+    const privateId = (await alice.agent.post(`/api/teams/${space.id}/notes`).send({ title: "Diary" })).body.id as string;
+    const tab = ctx.openNote(alice.cookie, privateId);
+    await tab.outcome;
+    addParagraph(tab.doc, "only for me");
+    await waitFor(() => expect(tab.provider.hasUnsyncedChanges).toBe(false));
+    await ctx.restart(); // saves, then comes back up
+
+    const [aliceAgain, bobAgain] = [await ctx.as("alice"), await ctx.as("bob")];
+    const mine = ctx.openNote(aliceAgain.cookie, privateId);
+    expect(await mine.outcome).toBe("allowed");
+    await waitFor(() => expect(extractText(mine.doc)).toBe("only for me"));
+    const intruder = ctx.openNote(bobAgain.cookie, privateId);
+    expect(await intruder.outcome).toBe("denied");
+    await new Promise((r) => setTimeout(r, 300)); // long enough for any leaked content to have arrived
+    expect(extractText(intruder.doc)).toBe("");
+  });
+
   it("saves while people are still typing, after a short pause", async () => {
     const { alice, row, noteId } = await world();
     const tab = ctx.openNote(alice.cookie, noteId);

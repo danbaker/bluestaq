@@ -20,6 +20,10 @@ const statements: string[] = [
      name       TEXT NOT NULL,
      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
    )`,
+  // A team with personal_owner_id set is that user's private space: only they belong to it, so notes in it
+  // are private. The unique index allows at most one per user (NULLs are not compared).
+  `ALTER TABLE teams ADD COLUMN IF NOT EXISTS personal_owner_id INTEGER REFERENCES users(id) ON DELETE CASCADE`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS teams_personal_owner_idx ON teams (personal_owner_id)`,
   `CREATE TABLE IF NOT EXISTS team_members (
      team_id    INTEGER NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
      user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,

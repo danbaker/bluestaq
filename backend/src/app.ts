@@ -34,7 +34,7 @@ export function createApp({ db, jwtSecret, secureCookie = false, repos = createR
   app.get("/api/health", (_req, res) => {
     res.json({ status: "ok" });
   });
-  app.use("/api/auth", createAuthRouter({ users, jwtSecret, secureCookie, realtime }));
+  app.use("/api/auth", createAuthRouter({ users, teams, jwtSecret, secureCookie, realtime }));
 
   // Protected
   app.get("/api/hello", requireAuth(jwtSecret), (req, res) => {
@@ -42,7 +42,7 @@ export function createApp({ db, jwtSecret, secureCookie = false, repos = createR
     res.json({ message: `Hello, ${name}!` });
   });
 
-  app.use("/api/users", auth, createUserRouter({ users }));
+  app.use("/api/users", auth, createUserRouter({ users, teams }));
   app.use("/api/teams/:id/notes", auth, requireTeamMember(teams), createTeamNotesRouter({ notes }));
   app.use("/api/teams", auth, createTeamRouter({ teams, users, realtime }));
   app.use("/api/notes", auth, createNoteRouter({ notes, teams, realtime }));

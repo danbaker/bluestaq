@@ -4,6 +4,9 @@ import { TEST_USER } from "../db/testDb.js";
 import { setupTestApp, PASSWORD } from "../testApp.js";
 
 let ctx: Awaited<ReturnType<typeof setupTestApp>>;
+
+/** The user's shared teams (everyone also has a private space, covered in private.test.ts). */
+const shared = (teams: { personal: boolean }[]) => teams.filter((t) => !t.personal);
 beforeEach(async () => {
   ctx = await setupTestApp();
 });
@@ -66,8 +69,8 @@ describe("teams", () => {
     const alice = await ctx.as("alice");
     const res = await alice.post("/api/teams").send({ name: "  Eng  " });
     expect(res.status).toBe(201);
-    expect(res.body).toEqual({ id: expect.any(Number), name: "Eng", role: "admin" });
-    expect((await alice.get("/api/teams")).body).toEqual([res.body]);
+    expect(res.body).toEqual({ id: expect.any(Number), name: "Eng", role: "admin", personal: false });
+    expect(shared((await alice.get("/api/teams")).body)).toEqual([res.body]);
   });
 
   it("rejects missing or overlong names", async () => {
@@ -84,13 +87,13 @@ describe("teams", () => {
     const b = (await bob.post("/api/teams").send({ name: "Beta" })).body;
     await bob.post(`/api/teams/${b.id}/members`).send({ username: "alice" });
 
-    const list = (await alice.get("/api/teams")).body;
+    const list = shared((await alice.get("/api/teams")).body);
     expect(list).toEqual([
-      { id: a.id, name: "Alpha", role: "admin" },
-      { id: b.id, name: "Beta", role: "member" },
+      { id: a.id, name: "Alpha", role: "admin", personal: false },
+      { id: b.id, name: "Beta", role: "member", personal: false },
     ]);
     // Bob only sees his own team.
-    expect((await bob.get("/api/teams")).body).toEqual([{ id: b.id, name: "Beta", role: "admin" }]);
+    expect(shared((await bob.get("/api/teams")).body)).toEqual([{ id: b.id, name: "Beta", role: "admin", personal: false }]);
   });
 });
 
@@ -102,9 +105,9 @@ describe("roles are per team", () => {
     const beta = (await bob.post("/api/teams").send({ name: "Beta" })).body.id as number; // bob: admin
     await bob.post(`/api/teams/${beta}/members`).send({ username: "alice" }); // alice: member of Beta
 
-    expect((await alice.get("/api/teams")).body).toEqual([
-      { id: alpha, name: "Alpha", role: "admin" },
-      { id: beta, name: "Beta", role: "member" },
+    expect(shared((await alice.get("/api/teams")).body)).toEqual([
+      { id: alpha, name: "Alpha", role: "admin", personal: false },
+      { id: beta, name: "Beta", role: "member", personal: false },
     ]);
     // Admin where she is admin...
     expect((await alice.post(`/api/teams/${alpha}/members`).send({ username: "carol" })).status).toBe(201);
@@ -126,7 +129,7 @@ describe("roles are per team", () => {
 
     // Demote alice on Beta only.
     expect((await bob.patch(`/api/teams/${beta}/members/${aliceId}`).send({ role: "member" })).status).toBe(200);
-    const roles = Object.fromEntries((await alice.get("/api/teams")).body.map((t: { name: string; role: string }) => [t.name, t.role]));
+    const roles = Object.fromEntries(shared((await alice.get("/api/teams")).body).map((t: { name: string; role: string }) => [t.name, t.role]));
     expect(roles).toEqual({ Alpha: "admin", Beta: "member" });
   });
 });
@@ -200,7 +203,7 @@ describe("members", () => {
     const bobId = (await alice.post(`/api/teams/${id}/members`).send({ username: "bob" })).body.userId;
     const bob = await ctx.as("bob");
     expect((await bob.delete(`/api/teams/${id}/members/${bobId}`)).status).toBe(204);
-    expect((await bob.get("/api/teams")).body).toEqual([]);
+    expect(shared((await bob.get("/api/teams")).body)).toEqual([]); // left the team; the private space stays
   });
 
   it("the last admin cannot be removed or leave; a second admin can", async () => {

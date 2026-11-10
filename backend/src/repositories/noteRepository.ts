@@ -14,6 +14,8 @@ export interface NoteSummary extends Note {
 }
 export interface UserNoteSummary extends NoteSummary {
   teamName: string;
+  /** In the user's private space (only they can see it). */
+  personal: boolean;
 }
 export interface NoteDetail extends Note {
   text: string;
@@ -29,6 +31,7 @@ interface NoteRow {
   preview?: string;
   text?: string;
   team_name?: string;
+  personal?: boolean;
 }
 
 export const PREVIEW_LENGTH = 200;
@@ -69,14 +72,14 @@ export function createNoteRepository(db: Db) {
     async listForUser(userId: number): Promise<UserNoteSummary[]> {
       const { rows } = await db.query<NoteRow>(
         `SELECT n.id, n.team_id, n.title, n.created_by, n.created_at, n.updated_at,
-                t.name AS team_name, substring(n.text from 1 for ${PREVIEW_LENGTH}) AS preview
+                t.name AS team_name, (t.personal_owner_id IS NOT NULL) AS personal, substring(n.text from 1 for ${PREVIEW_LENGTH}) AS preview
            FROM notes n
            JOIN team_members m ON m.team_id = n.team_id AND m.user_id = $1
            JOIN teams t ON t.id = n.team_id
           ORDER BY lower(t.name), t.name, n.team_id, n.updated_at DESC, n.id`,
         [userId],
       );
-      return rows.map((r) => ({ ...toNote(r), preview: r.preview ?? "", teamName: r.team_name! }));
+      return rows.map((r) => ({ ...toNote(r), preview: r.preview ?? "", teamName: r.team_name!, personal: Boolean(r.personal) }));
     },
 
     async findById(id: string): Promise<NoteDetail | null> {

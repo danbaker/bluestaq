@@ -3,7 +3,7 @@ import type { Role, TeamRepository } from "../repositories/teamRepository.js";
 
 declare module "express-serve-static-core" {
   interface Request {
-    membership?: { teamId: number; role: Role };
+    membership?: { teamId: number; role: Role; personal: boolean };
   }
 }
 
@@ -20,12 +20,12 @@ export function userIdOf(req: { session?: { sub: string } }): number {
 export function requireTeamMember(teams: TeamRepository): RequestHandler {
   return async (req, res, next) => {
     const teamId = parseId(req.params.id);
-    const role = teamId ? await teams.getRole(teamId, userIdOf(req)) : null;
-    if (!teamId || !role) {
+    const membership = teamId ? await teams.getMembership(teamId, userIdOf(req)) : null;
+    if (!teamId || !membership) {
       res.status(404).json({ error: "Team not found" });
       return;
     }
-    req.membership = { teamId, role };
+    req.membership = { teamId, role: membership.role, personal: membership.personal };
     next();
   };
 }
@@ -34,6 +34,15 @@ export function requireTeamMember(teams: TeamRepository): RequestHandler {
 export const requireTeamAdmin: RequestHandler = (req, res, next) => {
   if (req.membership?.role !== "admin") {
     res.status(403).json({ error: "Team admin required" });
+    return;
+  }
+  next();
+};
+
+/** Use after requireTeamMember. A private space can't be shared or changed. */
+export const rejectPrivateSpace: RequestHandler = (req, res, next) => {
+  if (req.membership?.personal) {
+    res.status(403).json({ error: "This is your private space; it can't be shared or changed" });
     return;
   }
   next();

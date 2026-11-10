@@ -1,6 +1,7 @@
 import { Router } from "express";
 import bcrypt from "bcryptjs";
 import { SESSION_COOKIE, SESSION_TTL_SECONDS } from "../config.js";
+import type { TeamRepository } from "../repositories/teamRepository.js";
 import type { UserRepository } from "../repositories/userRepository.js";
 import type { RealtimeControl } from "../realtime/control.js";
 import { signSession, verifySession } from "./jwt.js";
@@ -11,12 +12,13 @@ const DUMMY_HASH = bcrypt.hashSync("dummy-password", 10);
 
 export interface AuthOptions {
   users: UserRepository;
+  teams: TeamRepository;
   jwtSecret: string;
   secureCookie: boolean;
   realtime: RealtimeControl;
 }
 
-export function createAuthRouter({ users, jwtSecret, secureCookie, realtime }: AuthOptions): Router {
+export function createAuthRouter({ users, teams, jwtSecret, secureCookie, realtime }: AuthOptions): Router {
   const router = Router();
 
   router.post("/login", async (req, res) => {
@@ -31,6 +33,7 @@ export function createAuthRouter({ users, jwtSecret, secureCookie, realtime }: A
       res.status(401).json({ error: "Invalid credentials" });
       return;
     }
+    await teams.ensurePersonalTeam(user.id).catch((err) => console.error("Could not ensure private space", err)); // self-heals; never blocks login
     res.cookie(SESSION_COOKIE, signSession(jwtSecret, user), {
       httpOnly: true,
       sameSite: "lax",

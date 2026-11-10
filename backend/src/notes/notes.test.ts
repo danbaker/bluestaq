@@ -175,6 +175,7 @@ describe("GET /api/notes (all my teams)", () => {
       id,
       teamId,
       teamName: "Alpha",
+      personal: false,
       title: "Shape",
       preview: "y".repeat(200),
       createdBy: expect.any(Number),
