@@ -14,6 +14,20 @@ const statements: string[] = [
      password_hash TEXT NOT NULL,
      created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
    )`,
+  `ALTER TABLE users ADD COLUMN IF NOT EXISTS is_admin BOOLEAN NOT NULL DEFAULT false`,
+  `CREATE TABLE IF NOT EXISTS teams (
+     id         SERIAL PRIMARY KEY,
+     name       TEXT NOT NULL,
+     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+   )`,
+  `CREATE TABLE IF NOT EXISTS team_members (
+     team_id    INTEGER NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+     user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+     role       TEXT NOT NULL CHECK (role IN ('admin', 'member')),
+     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+     PRIMARY KEY (team_id, user_id)
+   )`,
+  `CREATE INDEX IF NOT EXISTS team_members_user_idx ON team_members (user_id)`,
 ];
 
 export async function createSchema(db: Db): Promise<void> {

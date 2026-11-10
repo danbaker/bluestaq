@@ -28,12 +28,24 @@ describe("seed + user repository", () => {
     expect(rows[0].password_hash).not.toBe("pw");
   });
 
+  it("marks the seeded admin as site admin, even if the user already existed", async () => {
+    const db = freshDb();
+    await createSchema(db);
+    const repo = createUserRepository(db);
+    await repo.create("admin", "hash"); // pre-existing, not admin
+    expect((await repo.findByUsername("admin"))!.isAdmin).toBe(false);
+    await seed(db, { adminUsername: "Admin", adminPassword: "pw" });
+    expect((await repo.findByUsername("admin"))!.isAdmin).toBe(true);
+    expect((await db.query("SELECT * FROM users")).rows).toHaveLength(1);
+  });
+
   it("finds users by username and id", async () => {
     const db = freshDb();
     await createSchema(db);
     const repo = createUserRepository(db);
-    const created = await repo.create("bob", "hash");
-    expect(await repo.findByUsername("bob")).toEqual(created);
+    const created = await repo.create("Bob", "hash");
+    expect(created.username).toBe("bob");
+    expect(await repo.findByUsername("BOB")).toEqual(created);
     expect(await repo.findById(created.id)).toEqual(created);
     expect(await repo.findByUsername("nobody")).toBeNull();
   });

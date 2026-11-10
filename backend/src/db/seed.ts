@@ -10,7 +10,8 @@ export interface SeedOptions {
 /** Populates initial data. Idempotent: only inserts what is missing. */
 export async function seed(db: Db, opts: SeedOptions): Promise<void> {
   const users = createUserRepository(db);
-  if (!(await users.findByUsername(opts.adminUsername))) {
-    await users.create(opts.adminUsername, await bcrypt.hash(opts.adminPassword, 10));
-  }
+  const admin =
+    (await users.findByUsername(opts.adminUsername)) ??
+    (await users.create(opts.adminUsername, await bcrypt.hash(opts.adminPassword, 10)));
+  if (!admin.isAdmin) await users.setAdmin(admin.id, true);
 }
