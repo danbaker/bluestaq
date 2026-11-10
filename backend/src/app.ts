@@ -2,13 +2,11 @@ import express, { type ErrorRequestHandler } from "express";
 import cors from "cors";
 import cookieParser from "cookie-parser";
 import type { Db } from "./db/client.js";
-import { createUserRepository } from "./repositories/userRepository.js";
+import { createRepositories, type Repositories } from "./repositories/index.js";
 import { createAuthRouter } from "./auth/routes.js";
 import { requireAuth } from "./auth/middleware.js";
-import { createTeamRepository } from "./repositories/teamRepository.js";
 import { createTeamRouter } from "./teams/routes.js";
 import { createUserRouter } from "./users/routes.js";
-import { createNoteRepository } from "./repositories/noteRepository.js";
 import { createNoteRouter, createTeamNotesRouter } from "./notes/routes.js";
 import { requireTeamMember } from "./teams/middleware.js";
 
@@ -16,17 +14,17 @@ export interface AppOptions {
   db: Db;
   jwtSecret: string;
   secureCookie?: boolean;
+  /** Share repositories with other layers (e.g. realtime). Built from db if omitted. */
+  repos?: Repositories;
 }
 
-export function createApp({ db, jwtSecret, secureCookie = false }: AppOptions) {
+export function createApp({ db, jwtSecret, secureCookie = false, repos = createRepositories(db) }: AppOptions) {
   const app = express();
   app.use(cors({ origin: true, credentials: true }));
   app.use(express.json());
   app.use(cookieParser());
 
-  const users = createUserRepository(db);
-  const teams = createTeamRepository(db);
-  const notes = createNoteRepository(db);
+  const { users, teams, notes } = repos;
   const auth = requireAuth(jwtSecret);
 
   // Public

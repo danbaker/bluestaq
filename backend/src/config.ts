@@ -11,6 +11,7 @@ export const config = {
   isProduction,
   port: Number(process.env.PORT) || 3001,
   databaseUrl: required("PGCONNECTIONSTRING", "postgresql://userx:pw@localhost:5432/bluestaq_dev?sslmode=disable"),
+  clientOrigin: process.env.CLIENT_ORIGIN || "http://localhost:5173",
   jwtSecret: required("JWT_SECRET", "dev-only-secret-change-me"),
   seedAdminUsername: process.env.SEED_ADMIN_USERNAME || "admin",
   seedAdminPassword: required("SEED_ADMIN_PASSWORD", "admin123"),

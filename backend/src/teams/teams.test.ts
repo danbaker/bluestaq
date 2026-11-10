@@ -94,6 +94,43 @@ describe("teams", () => {
   });
 });
 
+describe("roles are per team", () => {
+  it("admin on one team has no admin powers on another team where they are a plain member", async () => {
+    const alice = await ctx.as("alice");
+    const bob = await ctx.as("bob");
+    const alpha = (await alice.post("/api/teams").send({ name: "Alpha" })).body.id as number; // alice: admin
+    const beta = (await bob.post("/api/teams").send({ name: "Beta" })).body.id as number; // bob: admin
+    await bob.post(`/api/teams/${beta}/members`).send({ username: "alice" }); // alice: member of Beta
+
+    expect((await alice.get("/api/teams")).body).toEqual([
+      { id: alpha, name: "Alpha", role: "admin" },
+      { id: beta, name: "Beta", role: "member" },
+    ]);
+    // Admin where she is admin...
+    expect((await alice.post(`/api/teams/${alpha}/members`).send({ username: "carol" })).status).toBe(201);
+    // ...but not in the team where she is only a member.
+    expect((await alice.post(`/api/teams/${beta}/members`).send({ username: "carol" })).status).toBe(403);
+    const bobId = (await bob.get(`/api/teams/${beta}/members`)).body.find((m: { username: string }) => m.username === "bob").userId;
+    expect((await alice.patch(`/api/teams/${beta}/members/${bobId}`).send({ role: "member" })).status).toBe(403);
+    expect((await alice.delete(`/api/teams/${beta}/members/${bobId}`)).status).toBe(403);
+  });
+
+  it("changing a role on one team leaves the user's role on other teams alone", async () => {
+    const alice = await ctx.as("alice");
+    const bob = await ctx.as("bob");
+    const alpha = (await alice.post("/api/teams").send({ name: "Alpha" })).body.id as number;
+    const beta = (await bob.post("/api/teams").send({ name: "Beta" })).body.id as number;
+    const aliceId = (await alice.get(`/api/teams/${alpha}/members`)).body[0].userId as number;
+    await alice.post(`/api/teams/${alpha}/members`).send({ username: "bob", role: "admin" });
+    await bob.post(`/api/teams/${beta}/members`).send({ username: "alice", role: "admin" });
+
+    // Demote alice on Beta only.
+    expect((await bob.patch(`/api/teams/${beta}/members/${aliceId}`).send({ role: "member" })).status).toBe(200);
+    const roles = Object.fromEntries((await alice.get("/api/teams")).body.map((t: { name: string; role: string }) => [t.name, t.role]));
+    expect(roles).toEqual({ Alpha: "admin", Beta: "member" });
+  });
+});
+
 describe("members", () => {
   async function aliceTeam() {
     const alice = await ctx.as("alice");

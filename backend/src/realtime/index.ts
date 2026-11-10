@@ -1,0 +1,161 @@
+import type { IncomingMessage, Server as HttpServer } from "node:http";
+import type { Duplex } from "node:stream";
+import { Hocuspocus } from "@hocuspocus/server";
+import { WebSocketServer, type RawData, type WebSocket } from "ws";
+import { verifySession } from "../auth/jwt.js";
+import { SESSION_COOKIE } from "../config.js";
+import type { NoteRepository } from "../repositories/noteRepository.js";
+import type { TeamRepository } from "../repositories/teamRepository.js";
+
+export const WS_PATH = "/ws";
+const MAX_PAYLOAD_BYTES = 5 * 1024 * 1024;
+// Note ids are lowercase UUIDs. Requiring the canonical form means one note can never end up as
+// two different live documents ("ABC..." vs "abc...").
+const NOTE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+/** Attached to every connection (one per browser tab) when the socket is accepted. */
+export interface ConnectionContext {
+  userId: number;
+  username: string;
+}
+
+export interface RealtimeOptions {
+  server: HttpServer;
+  jwtSecret: string;
+  /** Browser Origin allowed to open sockets. Requests with no Origin (non-browser clients) are allowed. */
+  allowedOrigin: string;
+  notes: NoteRepository;
+  teams: TeamRepository;
+  /** How often to ping sockets; one that misses a whole interval is dropped. Default 30s. */
+  heartbeatMs?: number;
+}
+
+function parseCookies(header: string | undefined): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const part of (header ?? "").split(";")) {
+    const i = part.indexOf("=");
+    if (i < 0) continue;
+    const value = part.slice(i + 1).trim();
+    try {
+      out[part.slice(0, i).trim()] = decodeURIComponent(value);
+    } catch {
+      out[part.slice(0, i).trim()] = value;
+    }
+  }
+  return out;
+}
+
+function toBytes(data: RawData): Uint8Array {
+  if (Array.isArray(data)) return Buffer.concat(data);
+  return data instanceof ArrayBuffer ? new Uint8Array(data) : data;
+}
+
+function toWebRequest(req: IncomingMessage): Request {
+  const headers = new Headers();
+  for (const [name, value] of Object.entries(req.headers)) {
+    if (Array.isArray(value)) value.forEach((v) => headers.append(name, v));
+    else if (value !== undefined) headers.set(name, value);
+  }
+  // Host is client-controlled and not needed: only the headers and query string matter downstream.
+  return new Request(`http://localhost${req.url?.startsWith("/") ? req.url : WS_PATH}`, { headers });
+}
+
+function reject(socket: Duplex, status: number, text: string) {
+  socket.on("error", () => {});
+  socket.write(`HTTP/1.1 ${status} ${text}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`);
+  socket.destroy();
+}
+
+/**
+ * Live note sync over WebSocket at /ws (Yjs via Hocuspocus).
+ *
+ * Two gates:
+ *  1. The HTTP upgrade needs a valid session cookie and an allowed Origin.
+ *  2. Every note a tab opens is checked on its own (onAuthenticate): the note must exist and the
+ *     user must be on its team. Hocuspocus runs this for every document before it creates the
+ *     connection, so one tab's socket can carry many notes safely.
+ *
+ * One socket is one browser tab. The same user may hold many sockets, and the same note may be
+ * open on many of them; they all share one server-side document.
+ */
+export function attachRealtime({ server, jwtSecret, allowedOrigin, notes, teams, heartbeatMs = 30_000 }: RealtimeOptions) {
+  const hocuspocus = new Hocuspocus({
+    quiet: true,
+    async onAuthenticate({ documentName, context }) {
+      const { userId } = context as ConnectionContext;
+      const note = NOTE_ID.test(documentName) ? await notes.findById(documentName) : null;
+      const role = note ? await teams.getRole(note.teamId, userId) : null;
+      // Missing note, wrong team and bad id are deliberately indistinguishable.
+      if (!note || !role) throw new Error("permission-denied");
+      return { noteId: note.id, teamId: note.teamId };
+    },
+  });
+
+  const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_PAYLOAD_BYTES });
+
+  const alive = new WeakSet<WebSocket>();
+
+  const onUpgrade = (req: IncomingMessage, socket: Duplex, head: Buffer) => {
+    try {
+      if (new URL(req.url ?? "/", "http://localhost").pathname !== WS_PATH) return reject(socket, 404, "Not Found");
+      if (req.headers.origin && req.headers.origin !== allowedOrigin) return reject(socket, 403, "Forbidden");
+
+      const token = parseCookies(req.headers.cookie)[SESSION_COOKIE];
+      const session = token ? verifySession(jwtSecret, token) : null;
+      if (!session) return reject(socket, 401, "Unauthorized");
+
+      const context: ConnectionContext = { userId: Number(session.sub), username: session.username };
+      const request = toWebRequest(req);
+      wss.handleUpgrade(req, socket, head, (ws: WebSocket) => {
+        try {
+          const connection = hocuspocus.handleConnection(ws, request, context);
+          alive.add(ws);
+          ws.on("message", (data, isBinary) => {
+            if (isBinary) connection.handleMessage(toBytes(data));
+          });
+          ws.on("close", (code, reason) => connection.handleClose({ code, reason: reason.toString() }));
+          ws.on("pong", () => {
+            alive.add(ws);
+            connection.touch();
+          });
+          ws.on("error", () => {});
+        } catch (err) {
+          console.error("Failed to set up WebSocket connection", err);
+          ws.terminate();
+        }
+      });
+    } catch {
+      // A malformed request must never crash the process.
+      reject(socket, 400, "Bad Request");
+    }
+  };
+  server.on("upgrade", onUpgrade);
+
+  // Drop sockets that vanished without a close frame (laptop lid, dead network).
+  const heartbeat = setInterval(() => {
+    for (const ws of wss.clients) {
+      if (!alive.has(ws)) {
+        ws.terminate();
+        continue;
+      }
+      alive.delete(ws);
+      ws.ping();
+    }
+  }, heartbeatMs);
+  heartbeat.unref();
+
+  return {
+    hocuspocus,
+    /** Stop accepting sockets, drop the open ones, and release open documents. */
+    close() {
+      clearInterval(heartbeat);
+      server.off("upgrade", onUpgrade);
+      hocuspocus.closeConnections();
+      hocuspocus.flushPendingStores();
+      wss.clients.forEach((c) => c.terminate());
+      wss.close();
+    },
+  };
+}
+
+export type Realtime = ReturnType<typeof attachRealtime>;
