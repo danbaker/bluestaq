@@ -76,7 +76,7 @@ export function createNoteRepository(db: Db) {
           ORDER BY lower(t.name), t.name, n.team_id, n.updated_at DESC, n.id`,
         [userId],
       );
-      return rows.map((r) => ({ ...toNote(r), preview: r.preview ?? "", teamName: r.team_name ?? "" }));
+      return rows.map((r) => ({ ...toNote(r), preview: r.preview ?? "", teamName: r.team_name! }));
     },
 
     async findById(id: string): Promise<NoteDetail | null> {

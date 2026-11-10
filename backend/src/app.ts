@@ -44,10 +44,25 @@ export function createApp({ db, jwtSecret, secureCookie = false, repos = createR
   app.use("/api/teams", auth, createTeamRouter({ teams, users }));
   app.use("/api/notes", auth, createNoteRouter({ notes, teams }));
 
-  // Malformed JSON -> 400; anything unexpected -> 500 JSON (never a stack trace).
-  const onError: ErrorRequestHandler = (err, _req, res, _next) => {
+  // API errors are always JSON, never an HTML page or a stack trace.
+  app.use("/api", (_req, res) => {
+    res.status(404).json({ error: "Not found" });
+  });
+
+  const onError: ErrorRequestHandler = (err, _req, res, next) => {
+    if (res.headersSent) return next(err);
     if (err?.type === "entity.parse.failed") {
       res.status(400).json({ error: "Invalid JSON" });
+      return;
+    }
+    if (err?.type === "entity.too.large") {
+      res.status(413).json({ error: "Request body too large" });
+      return;
+    }
+    const status = Number(err?.status ?? err?.statusCode);
+    if (status >= 400 && status < 500) {
+      // Other client errors (e.g. 415 unsupported charset). Their message is written for clients; use it when exposed.
+      res.status(status).json({ error: err.expose && typeof err.message === "string" ? err.message : "Bad request" });
       return;
     }
     console.error(err);
