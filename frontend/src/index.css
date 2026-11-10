@@ -1,1 +1,11 @@
 @import "tailwindcss";
+
+/* The note editor (ProseMirror). */
+.ProseMirror {
+  min-height: 60vh;
+  outline: none;
+}
+.ProseMirror p {
+  margin: 0 0 0.75rem;
+  line-height: 1.6;
+}

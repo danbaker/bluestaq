@@ -1,88 +1,79 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { MemoryRouter } from "react-router-dom";
 import { afterEach, describe, it, expect, vi } from "vitest";
 import App from "./App";
-
-type Handler = (init?: RequestInit) => { status?: number; body?: unknown };
-
-/** Stub fetch with per-path handlers. Unknown paths fail the test loudly. */
-function mockApi(routes: Record<string, Handler>) {
-  const fn = vi.fn(async (path: string, init?: RequestInit) => {
-    const h = routes[path];
-    if (!h) throw new Error(`Unexpected fetch ${path}`);
-    const { status = 200, body = {} } = h(init);
-    return { ok: status < 400, status, json: async () => body } as Response;
-  });
-  vi.stubGlobal("fetch", fn);
-  return fn;
-}
+import { mockApi, team } from "./testUtils";
 
 afterEach(() => vi.unstubAllGlobals());
 
+const renderApp = (path = "/") =>
+  render(
+    <MemoryRouter initialEntries={[path]}>
+      <App />
+    </MemoryRouter>,
+  );
+
 describe("App", () => {
-  it("shows the index page with login form when logged out", async () => {
-    mockApi({ "/api/auth/me": () => ({ status: 401, body: { error: "Unauthorized" } }) });
-    render(<App />);
-    expect(screen.getByRole("heading", { name: "Bluestaq" })).toBeInTheDocument();
+  it("shows the index page with a login form when logged out", async () => {
+    mockApi({ "GET /api/auth/me": { status: 401, body: { error: "Unauthorized" } } });
+    renderApp();
+    expect(screen.getByRole("link", { name: "Bluestaq" })).toBeInTheDocument();
     expect(await screen.findByRole("button", { name: "Sign in" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Log out" })).not.toBeInTheDocument();
   });
 
-  it("shows hello message when already logged in", async () => {
+  it("a logged-out visitor to a note URL is asked to sign in, not shown the note", async () => {
+    const fetchMock = mockApi({ "GET /api/auth/me": { status: 401 } });
+    renderApp("/notes/abc");
+    expect(await screen.findByRole("button", { name: "Sign in" })).toBeInTheDocument();
+    expect(fetchMock.mock.calls.map(([p]) => p)).toEqual(["/api/auth/me"]);
+  });
+
+  it("signs in through the form and lands on the notes list", async () => {
     mockApi({
-      "/api/auth/me": () => ({ body: { username: "admin" } }),
-      "/api/hello": () => ({ body: { message: "Hello, admin!" } }),
+      "GET /api/auth/me": { status: 401 },
+      "POST /api/auth/login": { body: { username: "admin" } },
+      "GET /api/teams": { body: [team(1, "Alpha")] },
+      "GET /api/notes": { body: [] },
     });
-    render(<App />);
-    expect(await screen.findByText("Hello, admin!")).toBeInTheDocument();
-  });
-
-  it("logs in through the form and then loads hello", async () => {
-    const fetchMock = mockApi({
-      "/api/auth/me": () => ({ status: 401 }),
-      "/api/auth/login": () => ({ body: { username: "admin" } }),
-      "/api/hello": () => ({ body: { message: "Hello, admin!" } }),
-    });
-    render(<App />);
+    renderApp();
     await userEvent.type(await screen.findByLabelText("Username"), "admin");
-    await userEvent.type(screen.getByLabelText("Password"), "admin123");
+    await userEvent.type(screen.getByLabelText("Password"), "pw");
     await userEvent.click(screen.getByRole("button", { name: "Sign in" }));
-
-    expect(await screen.findByText("Hello, admin!")).toBeInTheDocument();
-    const loginCall = fetchMock.mock.calls.find(([p]) => p === "/api/auth/login")!;
-    expect(JSON.parse(loginCall[1]!.body as string)).toEqual({ username: "admin", password: "admin123" });
-    expect(loginCall[1]).toMatchObject({ method: "POST", credentials: "include" });
+    expect(await screen.findByRole("heading", { name: "Your notes" })).toBeInTheDocument();
+    expect(screen.getByText("admin")).toBeInTheDocument();
   });
 
-  it("shows an error on bad credentials and stays on the form", async () => {
+  it("shows the notes list when already signed in, and logs out back to the form", async () => {
     mockApi({
-      "/api/auth/me": () => ({ status: 401 }),
-      "/api/auth/login": () => ({ status: 401, body: { error: "Invalid credentials" } }),
+      "GET /api/auth/me": { body: { username: "admin" } },
+      "GET /api/teams": { body: [] },
+      "GET /api/notes": { body: [] },
+      "POST /api/auth/logout": { status: 204 },
     });
-    render(<App />);
-    await userEvent.type(await screen.findByLabelText("Username"), "admin");
-    await userEvent.type(screen.getByLabelText("Password"), "nope");
-    await userEvent.click(screen.getByRole("button", { name: "Sign in" }));
-    expect(await screen.findByRole("alert")).toHaveTextContent("Invalid credentials");
-    expect(screen.getByRole("button", { name: "Sign in" })).toBeInTheDocument();
-  });
-
-  it("logs out and returns to the login form", async () => {
-    mockApi({
-      "/api/auth/me": () => ({ body: { username: "admin" } }),
-      "/api/hello": () => ({ body: { message: "Hello, admin!" } }),
-      "/api/auth/logout": () => ({ status: 204 }),
-    });
-    render(<App />);
+    renderApp();
     await userEvent.click(await screen.findByRole("button", { name: "Log out" }));
     expect(await screen.findByRole("button", { name: "Sign in" })).toBeInTheDocument();
   });
 
-  it("returns to login if hello comes back 401 (expired session)", async () => {
+  it("an unknown URL goes to the notes list", async () => {
     mockApi({
-      "/api/auth/me": () => ({ body: { username: "admin" } }),
-      "/api/hello": () => ({ status: 401, body: { error: "Unauthorized" } }),
+      "GET /api/auth/me": { body: { username: "admin" } },
+      "GET /api/teams": { body: [] },
+      "GET /api/notes": { body: [] },
     });
-    render(<App />);
+    renderApp("/nonsense/path");
+    expect(await screen.findByRole("heading", { name: "Your notes" })).toBeInTheDocument();
+  });
+
+  it("goes back to the login form when a page finds the session has ended", async () => {
+    mockApi({
+      "GET /api/auth/me": { body: { username: "admin" } },
+      "GET /api/teams": { status: 401, body: { error: "Unauthorized" } },
+      "GET /api/notes": { status: 401, body: { error: "Unauthorized" } },
+    });
+    renderApp();
     expect(await screen.findByRole("button", { name: "Sign in" })).toBeInTheDocument();
   });
 });

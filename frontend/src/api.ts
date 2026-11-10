@@ -19,13 +19,45 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return body as T;
 }
 
+export interface Team {
+  id: number;
+  name: string;
+  role: "admin" | "member";
+}
+
+/** A note as shown in the list (no full text). */
+export interface NoteListItem {
+  id: string;
+  teamId: number;
+  teamName: string;
+  title: string;
+  preview: string;
+  updatedAt: string;
+}
+
+export interface NoteDetail {
+  id: string;
+  teamId: number;
+  title: string;
+  updatedAt: string;
+}
+
+const json = (body: unknown) => ({ body: JSON.stringify(body) });
+
 export const api = {
   me: () => request<{ username: string }>("/api/auth/me"),
   login: (username: string, password: string) =>
-    request<{ username: string }>("/api/auth/login", {
-      method: "POST",
-      body: JSON.stringify({ username, password }),
-    }),
+    request<{ username: string }>("/api/auth/login", { method: "POST", ...json({ username, password }) }),
   logout: () => request<void>("/api/auth/logout", { method: "POST" }),
-  hello: () => request<{ message: string }>("/api/hello"),
+
+  teams: () => request<Team[]>("/api/teams"),
+  createTeam: (name: string) => request<Team>("/api/teams", { method: "POST", ...json({ name }) }),
+
+  notes: () => request<NoteListItem[]>("/api/notes"),
+  note: (id: string) => request<NoteDetail>(`/api/notes/${encodeURIComponent(id)}`),
+  createNote: (teamId: number, title?: string) =>
+    request<NoteDetail>(`/api/teams/${teamId}/notes`, { method: "POST", ...json(title ? { title } : {}) }),
+  renameNote: (id: string, title: string) =>
+    request<NoteDetail>(`/api/notes/${encodeURIComponent(id)}`, { method: "PATCH", ...json({ title }) }),
+  deleteNote: (id: string) => request<void>(`/api/notes/${encodeURIComponent(id)}`, { method: "DELETE" }),
 };
