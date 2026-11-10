@@ -31,11 +31,13 @@ export function bodiesOf(fn: ReturnType<typeof mockApi>, key: string): unknown[]
 
 export const calledWith = (fn: ReturnType<typeof mockApi>, key: string) => bodiesOf(fn, key).length > 0;
 
-export const team = (id: number, name: string, role: "admin" | "member" = "member") => ({ id, name, role });
-export const listNote = (id: string, teamId: number, teamName: string, title: string, preview = "") => ({
+export const team = (id: number, name: string, role: "admin" | "member" = "member", personal = false) => ({ id, name, role, personal });
+export const privateSpace = (id: number) => team(id, "Private", "admin", true);
+export const listNote = (id: string, teamId: number, teamName: string, title: string, preview = "", personal = false) => ({
   id,
   teamId,
   teamName,
+  personal,
   title,
   preview,
   updatedAt: "2026-11-10T12:00:00.000Z",

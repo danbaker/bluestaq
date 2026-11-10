@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, describe, it, expect, vi } from "vitest";
 import NotesPage from "./NotesPage";
-import { bodiesOf, calledWith, listNote, mockApi, team } from "./testUtils";
+import { bodiesOf, calledWith, listNote, mockApi, privateSpace, team } from "./testUtils";
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -54,10 +54,48 @@ describe("NotesPage", () => {
     expect(await screen.findByText("Opened note page")).toBeInTheDocument();
   });
 
-  it("tells a new user with no teams how to start", async () => {
-    mockApi({ "GET /api/teams": { body: [] }, "GET /api/notes": { body: [] } });
+  it("a new user sees their private space and is told how to share notes", async () => {
+    mockApi({ "GET /api/teams": { body: [privateSpace(1)] }, "GET /api/notes": { body: [] } });
     renderPage();
-    expect(await screen.findByText(/not on a team yet/)).toBeInTheDocument();
+    const space = within(await screen.findByRole("region", { name: "Private" }));
+    expect(space.getByText("No private notes yet.")).toBeInTheDocument();
+    expect(space.getByRole("button", { name: "New note" })).toBeInTheDocument();
+    expect(screen.getByText(/Create a team below to share notes/)).toBeInTheDocument();
+  });
+
+  it("the private space is shown first and marked as only for you, with its notes next to the team notes", async () => {
+    mockApi({
+      "GET /api/teams": { body: [team(2, "Aardvarks"), privateSpace(1), team(3, "Zebras")] }, // deliberately not in order
+      "GET /api/notes": {
+        body: [
+          listNote("t1", 2, "Aardvarks", "Team plan"),
+          listNote("p1", 1, "Private", "My diary", "dear diary", true),
+        ],
+      },
+    });
+    renderPage();
+    const sections = await screen.findAllByRole("region");
+    expect(sections.map((s) => s.getAttribute("aria-label"))).toEqual(["Private", "Aardvarks", "Zebras"]);
+    const space = within(sections[0]);
+    expect(space.getByText(/only you can see these/)).toBeInTheDocument();
+    expect(space.getByRole("link", { name: /My diary/ })).toHaveAttribute("href", "/notes/p1");
+    expect(space.queryByText("Team plan")).not.toBeInTheDocument();
+    expect(within(sections[1]).queryByText(/only you/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Create a team below to share/)).not.toBeInTheDocument(); // they already have one
+  });
+
+  it("New note in the private space creates it there", async () => {
+    const fetchMock = mockApi({
+      "GET /api/teams": { body: [privateSpace(7), team(2, "Alpha")] },
+      "GET /api/notes": { body: [] },
+      "POST /api/teams/7/notes": { status: 201, body: { id: "mine", teamId: 7, title: "Untitled" } },
+    });
+    renderPage();
+    const space = within(await screen.findByRole("region", { name: "Private" }));
+    await userEvent.click(space.getByRole("button", { name: "New note" }));
+    expect(await screen.findByText("Opened note page")).toBeInTheDocument();
+    expect(calledWith(fetchMock, "POST /api/teams/7/notes")).toBe(true);
+    expect(calledWith(fetchMock, "POST /api/teams/2/notes")).toBe(false);
   });
 
   it("New note creates a note in that team and opens it", async () => {

@@ -3,7 +3,11 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import { api, ApiError, type NoteDetail, type Team } from "./api";
 import NoteEditor from "./NoteEditor";
 
-type Load = { state: "loading" } | { state: "missing" } | { state: "error"; message: string } | { state: "ready"; note: NoteDetail; teamName: string };
+type Load =
+  | { state: "loading" }
+  | { state: "missing" }
+  | { state: "error"; message: string }
+  | { state: "ready"; note: NoteDetail; teamName: string; personal: boolean };
 
 export default function NotePage({ onSessionEnded }: { onSessionEnded: () => void }) {
   const { id = "" } = useParams();
@@ -27,7 +31,8 @@ export default function NotePage({ onSessionEnded }: { onSessionEnded: () => voi
         if (cancelled) return;
         setTitle(note.title);
         setSavedTitle(note.title);
-        setLoad({ state: "ready", note, teamName: teams.find((t) => t.id === note.teamId)?.name ?? "" });
+        const owner = teams.find((t) => t.id === note.teamId);
+        setLoad({ state: "ready", note, teamName: owner?.name ?? "", personal: owner?.personal ?? false });
       })
       .catch((err) => {
         if (cancelled) return;
@@ -99,7 +104,7 @@ export default function NotePage({ onSessionEnded }: { onSessionEnded: () => voi
     <div className="space-y-4">
       <div className="flex items-center justify-between gap-4">
         {back}
-        <span className="text-sm text-slate-400">{load.teamName}</span>
+        <span className="text-sm text-slate-400">{load.personal ? "🔒 Private: only you" : load.teamName}</span>
       </div>
 
       <input
@@ -125,7 +130,7 @@ export default function NotePage({ onSessionEnded }: { onSessionEnded: () => voi
       <div className="border-t border-slate-700 pt-4">
         {confirmingDelete ? (
           <div className="flex items-center gap-3 text-sm">
-            <span>Delete this note for everyone on {load.teamName || "the team"}?</span>
+            <span>{load.personal ? "Delete this private note?" : `Delete this note for everyone on ${load.teamName || "the team"}?`}</span>
             <button onClick={remove} className="rounded bg-red-600 px-3 py-1 hover:bg-red-500">
               Yes, delete
             </button>

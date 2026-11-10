@@ -73,7 +73,11 @@ export default function NotesPage({ onSessionEnded }: { onSessionEnded: () => vo
     );
   }
 
-  const teams = [...data.teams].sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
+  // The private space first, then shared teams by name.
+  const teams = [...data.teams].sort(
+    (a, b) => Number(b.personal) - Number(a.personal) || a.name.localeCompare(b.name, undefined, { sensitivity: "base" }),
+  );
+  const hasSharedTeam = teams.some((t) => !t.personal);
 
   return (
     <div className="space-y-8">
@@ -84,14 +88,22 @@ export default function NotesPage({ onSessionEnded }: { onSessionEnded: () => vo
         </p>
       )}
 
-      {teams.length === 0 && <p className="text-slate-300">You are not on a team yet. Create one below to start taking notes.</p>}
-
       {teams.map((team) => {
         const notes = data.notes.filter((n) => n.teamId === team.id);
         return (
           <section key={team.id} aria-label={team.name} className="space-y-2">
             <div className="flex items-center justify-between border-b border-slate-700 pb-1">
-              <h3 className="text-lg font-medium">{team.name}</h3>
+              <h3 className="text-lg font-medium">
+                {team.personal ? (
+                  <>
+                    <span aria-hidden="true">🔒 </span>
+                    Private
+                    <span className="ml-2 text-sm font-normal text-slate-400">only you can see these</span>
+                  </>
+                ) : (
+                  team.name
+                )}
+              </h3>
               <button
                 onClick={() => addNote(team.id)}
                 disabled={busy}
@@ -101,7 +113,7 @@ export default function NotesPage({ onSessionEnded }: { onSessionEnded: () => vo
               </button>
             </div>
             {notes.length === 0 ? (
-              <p className="text-sm text-slate-400">No notes yet.</p>
+              <p className="text-sm text-slate-400">{team.personal ? "No private notes yet." : "No notes yet."}</p>
             ) : (
               <ul className="divide-y divide-slate-800">
                 {notes.map((note) => (
@@ -117,6 +129,8 @@ export default function NotesPage({ onSessionEnded }: { onSessionEnded: () => vo
           </section>
         );
       })}
+
+      {!hasSharedTeam && <p className="text-sm text-slate-300">Create a team below to share notes with other people.</p>}
 
       <form onSubmit={addTeam} className="flex gap-2 border-t border-slate-700 pt-4">
         <input

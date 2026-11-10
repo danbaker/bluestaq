@@ -23,6 +23,8 @@ export interface Team {
   id: number;
   name: string;
   role: "admin" | "member";
+  /** The user's private space: only they can see notes in it. */
+  personal: boolean;
 }
 
 /** A note as shown in the list (no full text). */
@@ -30,6 +32,8 @@ export interface NoteListItem {
   id: string;
   teamId: number;
   teamName: string;
+  /** In the user's private space. */
+  personal: boolean;
   title: string;
   preview: string;
   updatedAt: string;

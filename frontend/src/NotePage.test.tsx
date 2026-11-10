@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { Link, MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, describe, it, expect, vi } from "vitest";
 import NotePage from "./NotePage";
-import { bodiesOf, calledWith, mockApi, team } from "./testUtils";
+import { bodiesOf, calledWith, mockApi, privateSpace, team } from "./testUtils";
 
 // The live editor has its own tests. Here it is a stand-in whose "events" the test can trigger.
 const editor = vi.hoisted(() => ({ props: null as null | { noteId: string; onAccessLost: () => void; onSessionEnded: () => void } }));
@@ -54,6 +54,28 @@ describe("NotePage", () => {
     expect(screen.getByText("Alpha")).toBeInTheDocument();
     expect(screen.getByTestId("editor")).toHaveTextContent("editor for n1");
     expect(screen.getByRole("link", { name: /All notes/ })).toHaveAttribute("href", "/");
+  });
+
+  it("a private note says so, and asks a private question before deleting", async () => {
+    mockApi({
+      "GET /api/notes/n1": { body: { ...NOTE, teamId: 9 } },
+      "GET /api/teams": { body: [privateSpace(9), team(1, "Alpha")] },
+      "DELETE /api/notes/n1": { status: 204 },
+    });
+    renderPage();
+    await screen.findByLabelText("Note title");
+    expect(screen.getByText(/Private: only you/)).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Delete note" }));
+    expect(screen.getByText("Delete this private note?")).toBeInTheDocument();
+    expect(screen.queryByText(/for everyone/)).not.toBeInTheDocument();
+  });
+
+  it("a team note shows the team name, not the private label", async () => {
+    mockApi({ "GET /api/notes/n1": { body: NOTE }, "GET /api/teams": { body: [privateSpace(9), team(1, "Alpha")] } });
+    renderPage();
+    await screen.findByLabelText("Note title");
+    expect(screen.getByText("Alpha")).toBeInTheDocument();
+    expect(screen.queryByText(/only you/)).not.toBeInTheDocument();
   });
 
   it("renames on Enter and on blur, sending the trimmed title", async () => {
